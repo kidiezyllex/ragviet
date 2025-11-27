@@ -21,7 +21,6 @@ class PDFProcessor:
             chunk_size: Kích thước chunk (ký tự) - khuyến nghị 300-500
             overlap: Độ chồng lấp giữa các chunk (ký tự) - khuyến nghị 100
         """
-        # Đảm bảo chunk_size trong khoảng 300-500
         if chunk_size < 300:
             chunk_size = 300
         elif chunk_size > 500:

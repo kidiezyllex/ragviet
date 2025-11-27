@@ -24,7 +24,6 @@ class Reranker:
         try:
             from FlagEmbedding import FlagReranker
             logger.info(f"Đang tải reranker model: {model_name}")
-            # Thử dùng flash_attn_2 nếu có thể
             try:
                 self.model = FlagReranker(model_name, use_fp16=True, use_flash_attention_2=True)
                 logger.info(f"Đã tải reranker {model_name} với flash_attn_2 thành công")

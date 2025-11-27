@@ -4,6 +4,11 @@ Module xử lý authentication và session management
 import secrets
 from typing import Optional, Dict
 import logging
+import resend
+import os
+
+# Cấu hình Resend API Key
+resend.api_key = "re_JQk4fB5d_DztySKf3tqBCvx4mEPWp1Sjr"
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -99,12 +104,68 @@ class AuthManager:
         
         token = self.db.create_reset_token(email)
         if token:
-            # Trong thực tế, nên gửi email với token
-            # Ở đây chỉ trả về message
-            return {
-                "success": True,
-                "message": f"Token reset đã được tạo. Token của bạn: {token}\n(Lưu ý: Trong production, token sẽ được gửi qua email)"
-            }
+            # Kiểm tra API key
+            api_key = "re_JQk4fB5d_DztySKf3tqBCvx4mEPWp1Sjr"
+            if not api_key:
+                return {
+                    "success": False,
+                    "message": "Hệ thống email chưa được cấu hình. Vui lòng liên hệ quản trị viên."
+                }
+            
+            if not api_key.startswith("re_"):
+                return {
+                    "success": False,
+                    "message": "API key không hợp lệ. Vui lòng kiểm tra cấu hình."
+                }
+            
+            try:
+                # Gửi email với Resend
+                params = {
+                    "from": "RagVietDocument@gmail.com",
+                    "to": [email],
+                    "subject": "Mã xác thực đặt lại mật khẩu - RAGViet",
+                    "html": f"""
+                    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                        <h2 style="color: #333;">Đặt lại mật khẩu</h2>
+                        <p>Bạn đã yêu cầu đặt lại mật khẩu cho tài khoản RAGViet.</p>
+                        <p>Mã OTP của bạn là:</p>
+                        <div style="background-color: #f4f4f4; padding: 15px; text-align: center; font-size: 24px; font-weight: bold; letter-spacing: 5px; margin: 20px 0;">
+                            {token}
+                        </div>
+                        <p style="color: #666; font-size: 14px;">Mã này sẽ hết hạn sau 15 phút.</p>
+                        <p style="color: #666; font-size: 14px;">Nếu bạn không yêu cầu đặt lại mật khẩu, vui lòng bỏ qua email này.</p>
+                    </div>
+                    """
+                }
+                
+                logger.info(f"Đang gửi email đến {email} với API key: {api_key[:10]}...")
+                email_resp = resend.Emails.send(params)
+                logger.info(f"✅ Đã gửi email reset password đến {email}. Response: {email_resp}")
+                
+                return {
+                    "success": True,
+                    "message": "Mã OTP đã được gửi đến email của bạn. Vui lòng kiểm tra."
+                }
+            except Exception as e:
+                error_msg = str(e)
+                logger.error(f"❌ Lỗi khi gửi email đến {email}: {error_msg}")
+                
+                # Xử lý các lỗi cụ thể
+                if "API key is invalid" in error_msg or "invalid" in error_msg.lower():
+                    return {
+                        "success": False,
+                        "message": "API key không hợp lệ. Vui lòng kiểm tra lại cấu hình tại https://resend.com/api-keys"
+                    }
+                elif "domain" in error_msg.lower():
+                    return {
+                        "success": False,
+                        "message": "Domain email chưa được xác thực. Vui lòng liên hệ quản trị viên."
+                    }
+                else:
+                    return {
+                        "success": False,
+                        "message": f"Không thể gửi email: {error_msg}"
+                    }
         else:
             return {"success": False, "message": "Email không tồn tại trong hệ thống"}
     

@@ -39,7 +39,6 @@ class VectorStore:
             logger.info(f"Đã tải model {embedding_model_name} thành công")
         except Exception as e:
             logger.warning(f"Không thể tải {embedding_model_name}: {str(e)}")
-            # Thử model dự phòng 1: SimCSE-VietNamese
             try:
                 fallback_model = "VoVanPhuc/sup-SimCSE-VietNamese-phobert-base"
                 logger.info(f"Thử tải model dự phòng: {fallback_model}")
@@ -47,7 +46,6 @@ class VectorStore:
                 logger.info(f"Đã tải model dự phòng {fallback_model} thành công")
             except Exception as e2:
                 logger.warning(f"Không thể tải SimCSE-VietNamese: {str(e2)}")
-                # Thử model dự phòng 2: paraphrase-multilingual
                 try:
                     fallback_model2 = "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
                     logger.info(f"Thử tải model dự phòng cuối cùng: {fallback_model2}")
@@ -143,7 +141,6 @@ class VectorStore:
         query_embedding = self.encoder.encode([query])
         query_embedding = np.array(query_embedding).astype('float32')
         
-        # Tăng top_k nếu có filter filename để có đủ kết quả sau khi filter
         search_k = top_k * 3 if filename else top_k
         k = min(search_k, self.index.ntotal)
         distances, indices = self.index.search(query_embedding, k)
@@ -152,13 +149,11 @@ class VectorStore:
         for idx, distance in zip(indices[0], distances[0]):
             if idx < len(self.metadata):
                 meta = self.metadata[idx]
-                # Filter theo filename nếu có
                 if filename and meta["filename"] != filename:
                     continue
                 result = meta.copy()
                 result["distance"] = float(distance)
                 results.append(result)
-                # Dừng khi đủ top_k kết quả
                 if len(results) >= top_k:
                     break
         
@@ -238,34 +233,28 @@ class VectorStore:
         if not chunks:
             return []
         
-        # Tạo set để tránh trùng lặp
         seen_chunks = set()
         expanded_chunks = []
         
-        # Lấy các chunk gốc
         for chunk in chunks:
             chunk_key = (chunk["filename"], chunk.get("page_number", 0), chunk.get("chunk_id", ""))
             if chunk_key not in seen_chunks:
                 seen_chunks.add(chunk_key)
                 expanded_chunks.append(chunk)
         
-        # Tìm các chunk từ các trang lân cận
         for chunk in chunks:
             filename = chunk["filename"]
             page_num = chunk.get("page_number", 0)
             
-            # Tìm các chunk từ các trang lân cận
             for i, meta in enumerate(self.metadata):
                 if meta["filename"] == filename:
                     meta_page = meta.get("page_number", 0)
-                    # Lấy các trang trong khoảng [page_num - page_range, page_num + page_range]
                     if abs(meta_page - page_num) <= page_range and meta_page != page_num:
                         chunk_key = (meta["filename"], meta.get("page_number", 0), meta.get("chunk_id", ""))
                         if chunk_key not in seen_chunks:
                             seen_chunks.add(chunk_key)
                             expanded_chunks.append(meta.copy())
         
-        # Sắp xếp lại theo filename, page_number, chunk_id
         expanded_chunks.sort(key=lambda x: (
             x.get("filename", ""),
             x.get("page_number", 0),

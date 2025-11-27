@@ -49,9 +49,12 @@ class Database:
         self.db.chat_history.create_index("user_id")
         self.db.chat_history.create_index([("user_id", 1), ("timestamp", -1)])
         
+        # Index cho chat_sessions collection
+        self.db.chat_sessions.create_index("user_id")
+        self.db.chat_sessions.create_index([("user_id", 1), ("created_at", -1)])
+        self.db.chat_sessions.create_index("session_id", unique=True)
+        
         logger.info("Đã tạo indexes")
-    
-    # ========== USER OPERATIONS ==========
     
     def create_user(self, username: str, email: str, password: str) -> Optional[Dict]:
         """
@@ -141,7 +144,8 @@ class Database:
         if not user:
             return None
         
-        token = secrets.token_urlsafe(32)
+        # Generate 4-digit OTP
+        token = str(secrets.randbelow(10000)).zfill(4)
         expires_at = datetime.utcnow().replace(hour=23, minute=59, second=59)
         
         self.db.users.update_one(
@@ -152,7 +156,7 @@ class Database:
             }}
         )
         
-        logger.info(f"Đã tạo reset token cho: {email}")
+        logger.info(f"Đã tạo reset OTP cho: {email}")
         return token
     
     def verify_reset_token(self, token: str) -> Optional[Dict]:
@@ -194,10 +198,8 @@ class Database:
             return True
         return False
     
-    # ========== CHAT HISTORY OPERATIONS ==========
-    
     def save_chat_message(self, user_id: str, message: str, response: str, 
-                         selected_file: Optional[str] = None) -> bool:
+                         selected_file: Optional[str] = None, session_id: Optional[str] = None) -> bool:
         """
         Lưu lịch sử chat
         
@@ -206,6 +208,7 @@ class Database:
             message: Câu hỏi
             response: Câu trả lời
             selected_file: File được chọn (nếu có)
+            session_id: ID của chat session (nếu có)
         """
         try:
             chat_entry = {
@@ -213,6 +216,7 @@ class Database:
                 "message": message,
                 "response": response,
                 "selected_file": selected_file,
+                "session_id": session_id,
                 "timestamp": datetime.utcnow()
             }
             
@@ -256,5 +260,126 @@ class Database:
             return True
         except Exception as e:
             logger.error(f"Lỗi khi xóa chat history: {str(e)}")
+            return False
+    
+    def create_chat_session(self, user_id: str, title: str = "Cuộc trò chuyện mới") -> Optional[str]:
+        """
+        Tạo chat session mới
+        
+        Args:
+            user_id: ID của user
+            title: Tiêu đề của session
+            
+        Returns:
+            session_id hoặc None
+        """
+        try:
+            session_id = secrets.token_urlsafe(16)
+            session = {
+                "session_id": session_id,
+                "user_id": user_id,
+                "title": title,
+                "created_at": datetime.utcnow(),
+                "updated_at": datetime.utcnow(),
+                "message_count": 0
+            }
+            
+            self.db.chat_sessions.insert_one(session)
+            logger.info(f"Đã tạo chat session: {session_id} cho user: {user_id}")
+            return session_id
+        except Exception as e:
+            logger.error(f"Lỗi khi tạo chat session: {str(e)}")
+            return None
+    
+    def get_chat_sessions(self, user_id: str, limit: int = 50) -> List[Dict]:
+        """
+        Lấy danh sách chat sessions của user
+        
+        Args:
+            user_id: ID của user
+            limit: Số lượng sessions tối đa
+            
+        Returns:
+            List các chat sessions
+        """
+        try:
+            sessions = list(self.db.chat_sessions.find(
+                {"user_id": user_id}
+            ).sort("updated_at", -1).limit(limit))
+            
+            for session in sessions:
+                session["_id"] = str(session["_id"])
+                session["created_at"] = session["created_at"].isoformat()
+                session["updated_at"] = session["updated_at"].isoformat()
+            
+            return sessions
+        except Exception as e:
+            logger.error(f"Lỗi khi lấy chat sessions: {str(e)}")
+            return []
+    
+    def get_session_messages(self, session_id: str) -> List[Dict]:
+        """
+        Lấy tất cả messages trong một session
+        
+        Args:
+            session_id: ID của session
+            
+        Returns:
+            List các messages
+        """
+        try:
+            messages = list(self.db.chat_history.find(
+                {"session_id": session_id}
+            ).sort("timestamp", 1))
+            
+            for msg in messages:
+                msg["_id"] = str(msg["_id"])
+                msg["timestamp"] = msg["timestamp"].isoformat()
+            
+            return messages
+        except Exception as e:
+            logger.error(f"Lỗi khi lấy session messages: {str(e)}")
+            return []
+    
+    def update_session(self, session_id: str, title: Optional[str] = None) -> bool:
+        """
+        Cập nhật thông tin session
+        
+        Args:
+            session_id: ID của session
+            title: Tiêu đề mới (nếu có)
+        """
+        try:
+            update_data = {"updated_at": datetime.utcnow()}
+            if title:
+                update_data["title"] = title
+            
+            result = self.db.chat_sessions.update_one(
+                {"session_id": session_id},
+                {"$set": update_data, "$inc": {"message_count": 1}}
+            )
+            
+            return result.modified_count > 0
+        except Exception as e:
+            logger.error(f"Lỗi khi cập nhật session: {str(e)}")
+            return False
+    
+    def delete_chat_session(self, session_id: str) -> bool:
+        """
+        Xóa chat session và tất cả messages trong đó
+        
+        Args:
+            session_id: ID của session
+        """
+        try:
+            self.db.chat_history.delete_many({"session_id": session_id})
+            
+            # Xóa session
+            result = self.db.chat_sessions.delete_one({"session_id": session_id})
+            
+            logger.info(f"Đã xóa chat session: {session_id}")
+            return result.deleted_count > 0
+        except Exception as e:
+            logger.error(f"Lỗi khi xóa chat session: {str(e)}")
             return False
 

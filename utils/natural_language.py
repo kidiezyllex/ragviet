@@ -4,7 +4,6 @@ Module xử lý câu hỏi tự nhiên không liên quan đến tài liệu
 import re
 from typing import Optional
 
-# Danh sách các câu hỏi tự nhiên và câu trả lời
 NATURAL_RESPONSES = {
     # Chào hỏi
     "chào": "Xin chào! Tôi là chatbot trợ lý hành chính Việt Nam. Tôi có thể giúp bạn tìm hiểu thông tin từ các tài liệu hành chính. Bạn cần hỗ trợ gì?",
@@ -37,9 +36,7 @@ NATURAL_RESPONSES = {
 
 def normalize_text(text: str) -> str:
     """Chuẩn hóa text để so sánh"""
-    # Chuyển về chữ thường, loại bỏ dấu câu
     text = text.lower().strip()
-    # Loại bỏ dấu câu
     text = re.sub(r'[^\w\s]', '', text)
     return text
 
@@ -56,7 +53,6 @@ def is_natural_question(query: str) -> bool:
     """
     normalized = normalize_text(query)
     
-    # Kiểm tra các pattern chào hỏi
     greeting_patterns = [
         r'^(chào|hello|hi)',
         r'^(chào|hello|hi)\s+',
@@ -72,7 +68,6 @@ def is_natural_question(query: str) -> bool:
         if re.match(pattern, normalized):
             return True
     
-    # Kiểm tra trong dictionary
     if normalized in NATURAL_RESPONSES:
         return True
     
@@ -91,16 +86,13 @@ def get_natural_response(query: str) -> Optional[str]:
     """
     normalized = normalize_text(query)
     
-    # Tìm exact match
     if normalized in NATURAL_RESPONSES:
         return NATURAL_RESPONSES[normalized]
     
-    # Tìm partial match
     for key, response in NATURAL_RESPONSES.items():
         if key in normalized or normalized in key:
             return response
     
-    # Pattern matching
     if re.match(r'^(chào|hello|hi)', normalized):
         return NATURAL_RESPONSES["chào"]
     elif re.match(r'^bạn\s+(là|khỏe|thế nào|có khỏe)', normalized):
