@@ -461,10 +461,14 @@ def login_fn(email, password, session_state):
             </div>
         </div>
         <script>
-            window.saveSessionToStorage('{result["session_id"]}');
+            if (window.saveSessionToStorage) {{
+                window.saveSessionToStorage('{result["session_id"]}');
+            }}
         </script>
         """
+        
         gr.Success("✅ " + result['message'])
+        
         return (
             session_state,
             gr.update(visible=False),  # Ẩn login_header_btn
@@ -549,7 +553,9 @@ def register_fn(username, email, password, confirm_password, session_state):
                 </div>
             </div>
             <script>
-                window.saveSessionToStorage('{login_result["session_id"]}');
+                if (window.saveSessionToStorage) {{
+                    window.saveSessionToStorage('{login_result["session_id"]}');
+                }}
             </script>
             """
             
@@ -709,6 +715,11 @@ def restore_session_from_id(stored_session_id, session_state):
                     </div>
             </div>
         </div>
+        <script>
+            if (window.saveSessionToStorage) {{
+                window.saveSessionToStorage('{stored_session_id}');
+            }}
+        </script>
         """
         
         return (
@@ -757,118 +768,48 @@ def create_new_chat_session(session_state):
 
 
 def get_chat_sessions_list(session_state):
-    """Lấy danh sách chat sessions"""
+    """Lấy danh sách chat sessions kèm thời gian & câu hỏi gần nhất"""
     if not isinstance(session_state, dict) or not session_state.get("value"):
-        return "Vui lòng đăng nhập để xem lịch sử chat", []
+        return "Vui lòng đăng nhập để xem lịch sử chat"
     
     user = auth_manager.get_user_from_session(session_state["value"])
     if not user or not database:
-        return "Không thể lấy danh sách chat", []
+        return "Không thể lấy danh sách chat"
     
     sessions = database.get_chat_sessions(user["user_id"])
     if not sessions:
-        return "Chưa có cuộc trò chuyện nào", []
+        return "Chưa có cuộc trò chuyện nào"
     
-    # Format danh sách sessions
-    sessions_text = f"**Tổng số cuộc trò chuyện: {len(sessions)}**\n\n"
-    session_choices = []
+    def _shorten(text, limit=90):
+        text = (text or "").strip()
+        if len(text) <= limit:
+            return text
+        return text[:limit - 3] + "..."
     
-    for i, session in enumerate(sessions, 1):
-        from datetime import datetime
+    from datetime import datetime
+    
+    session_lines = []
+    for session in sessions:
         updated_time = datetime.fromisoformat(session["updated_at"]).strftime("%d/%m/%Y %H:%M")
-        msg_count = session.get("message_count", 0)
-        title = session.get("title", "Cuộc trò chuyện mới")
-        
-        sessions_text += f"{i}. **{title}**\n"
-        sessions_text += f"   - Tin nhắn: {msg_count}\n"
-        sessions_text += f"   - Cập nhật: {updated_time}\n\n"
-        
-        session_choices.append((f"{title} ({msg_count} tin nhắn - {updated_time})", session["session_id"]))
+        last_message = database.get_last_message_of_session(session["session_id"])
+        last_question = last_message["message"] if last_message and last_message.get("message") else "Chưa có câu hỏi nào"
+        short_question = _shorten(last_question)
+        session_lines.append(f"- [{updated_time}] {short_question}")
     
-    return sessions_text, [choice[1] for choice in session_choices]
+    return "\n".join(session_lines)
 
 
-def view_session_detail(session_id, session_state):
-    """Xem chi tiết một chat session"""
-    if not session_id:
-        return "Vui lòng chọn một cuộc trò chuyện"
+def toggle_chat_history_panel(is_visible, session_state):
+    """Đảo trạng thái hiển thị của panel lịch sử chat"""
+    is_logged_in = isinstance(session_state, dict) and session_state.get("value")
+    current = bool(is_visible)
     
-    if not isinstance(session_state, dict) or not session_state.get("value"):
-        return "Vui lòng đăng nhập"
+    if not is_logged_in:
+        gr.Warning("Vui lòng đăng nhập để xem lịch sử chat")
+        return current, gr.update(visible=current)
     
-    if not database:
-        return "Không thể lấy chi tiết chat"
-    
-    messages = database.get_session_messages(session_id)
-    if not messages:
-        return "Cuộc trò chuyện này chưa có tin nhắn nào"
-    
-    # Format messages
-    detail_text = f"**Chi tiết cuộc trò chuyện** (Tổng: {len(messages)} tin nhắn)\n\n---\n\n"
-    
-    for i, msg in enumerate(messages, 1):
-        from datetime import datetime
-        timestamp = datetime.fromisoformat(msg["timestamp"]).strftime("%d/%m/%Y %H:%M:%S")
-        
-        detail_text += f"**#{i} - {timestamp}**\n\n"
-        detail_text += f"**❓ Câu hỏi:** {msg['message']}\n\n"
-        detail_text += f"**💬 Trả lời:**\n{msg['response']}\n\n"
-        
-        if msg.get("selected_file"):
-            detail_text += f"*📄 File: {msg['selected_file']}*\n\n"
-        
-        detail_text += "---\n\n"
-    
-    return detail_text
-
-
-def delete_session_fn(session_id, session_state):
-    """Xóa một chat session"""
-    if not session_id:
-        gr.Warning("Vui lòng chọn một cuộc trò chuyện để xóa")
-        return get_chat_sessions_list(session_state)
-    
-    if not isinstance(session_state, dict) or not session_state.get("value"):
-        gr.Warning("Vui lòng đăng nhập")
-        return get_chat_sessions_list(session_state)
-    
-    if not database:
-        gr.Error("Không thể xóa cuộc trò chuyện")
-        return get_chat_sessions_list(session_state)
-    
-    success = database.delete_chat_session(session_id)
-    if success:
-        gr.Success("Đã xóa cuộc trò chuyện")
-    else:
-        gr.Error("Không thể xóa cuộc trò chuyện")
-    
-    return get_chat_sessions_list(session_state)
-
-
-def load_session_to_chat(session_id, session_state):
-    """Load một session vào chat interface"""
-    if not session_id:
-        gr.Warning("Vui lòng chọn một cuộc trò chuyện")
-        return session_state, None
-    
-    if not isinstance(session_state, dict) or not session_state.get("value"):
-        gr.Warning("Vui lòng đăng nhập")
-        return session_state, None
-    
-    if not database:
-        gr.Error("Không thể load cuộc trò chuyện")
-        return session_state, None
-    
-    messages = database.get_session_messages(session_id)
-    
-    session_state["chat_session_id"] = session_id
-    
-    chat_history = []
-    for msg in messages:
-        chat_history.append([msg["message"], msg["response"]])
-    
-    gr.Success("Đã load cuộc trò chuyện!")
-    return session_state, chat_history
+    new_state = not current
+    return new_state, gr.update(visible=new_state)
 
 
 with gr.Blocks(theme=gr.themes.Soft(), title="Chatbot Hành Chính Việt Nam") as app:
@@ -992,6 +933,16 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Chatbot Hành Chính Việt Nam") 
             background: transparent !important;
             background-color: transparent !important;
         }
+        #chat-history-btn {
+            width: 100%;
+            margin-top: 12px;
+        }
+        #chat-history-panel {
+            border: 1px solid var(--border-color-primary);
+            border-radius: 10px;
+            padding: 16px;
+            background: var(--background-fill-secondary);
+        }
         /* Target label trong form đăng nhập và đăng ký cụ thể */
         #login_form label,
         #register_form label,
@@ -1092,20 +1043,45 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Chatbot Hành Chính Việt Nam") 
         window.clearSessionFromStorage = clearSessionFromStorage;
         
         // Auto-restore session khi load trang
-        document.addEventListener('DOMContentLoaded', function() {
-            setTimeout(function() {
-                const savedSession = loadSessionFromStorage();
-                if (savedSession) {
-                    console.log('Tìm thấy session đã lưu, đang restore...');
-                    // Tìm textbox ẩn để trigger restore
-                    const restoreInput = document.querySelector('#restore_session_input textarea');
-                    if (restoreInput) {
-                        restoreInput.value = savedSession;
-                        restoreInput.dispatchEvent(new Event('input', { bubbles: true }));
+        function tryRestoreSession() {
+            const savedSession = loadSessionFromStorage();
+            if (savedSession) {
+                console.log('Tìm thấy session đã lưu, đang restore...');
+                // Thử nhiều selector khác nhau
+                const selectors = [
+                    '#restore_session_input textarea',
+                    '#restore_session_input input',
+                    'textarea[data-testid="textbox"]',
+                    '.gr-textbox textarea'
+                ];
+                
+                let restoreInput = null;
+                for (const selector of selectors) {
+                    const elements = document.querySelectorAll(selector);
+                    for (const elem of elements) {
+                        if (elem.closest('#restore_session_input') || elem.id === 'restore_session_input') {
+                            restoreInput = elem;
+                            break;
+                        }
                     }
+                    if (restoreInput) break;
                 }
-            }, 1000);
-        });
+                
+                if (restoreInput) {
+                    console.log('Đã tìm thấy restore input, đang trigger...');
+                    restoreInput.value = savedSession;
+                    restoreInput.dispatchEvent(new Event('input', { bubbles: true }));
+                    restoreInput.dispatchEvent(new Event('change', { bubbles: true }));
+                } else {
+                    console.log('Chưa tìm thấy restore input, thử lại sau...');
+                }
+            }
+        }
+        
+        // Thử restore nhiều lần
+        setTimeout(tryRestoreSession, 1000);
+        setTimeout(tryRestoreSession, 2000);
+        setTimeout(tryRestoreSession, 3000);
     </script>
     </style>
     """)
@@ -1116,8 +1092,17 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Chatbot Hành Chính Việt Nam") 
     """)
     
     session_state = gr.State(value={"value": None, "user": None, "selected_file": None, "chat_session_id": None})
+    chat_history_visible = gr.State(False)
     
-    restore_session_input = gr.Textbox(visible=False, elem_id="restore_session_input")
+    restore_session_input = gr.Textbox(
+        visible=True,
+        show_label=False,
+        elem_id="restore_session_input",
+        interactive=False,
+        container=False,
+        lines=1,
+        placeholder=""
+    )
     
     gr.HTML("""
     <style>
@@ -1135,6 +1120,9 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Chatbot Hành Chính Việt Nam") 
             padding: 10px;
             border-radius: 8px;
             background: var(--background-fill-secondary);
+        }
+        #restore_session_input {
+            display: none !important;
         }
     </style>
     """)
@@ -1239,6 +1227,55 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Chatbot Hành Chính Việt Nam") 
                     ],
                     cache_examples=False
                 )
+                
+                chat_history_btn = gr.Button("📜 Lịch sử chat", variant="secondary", elem_id="chat-history-btn")
+                with gr.Column(visible=False, elem_id="chat-history-panel") as chat_history_panel:
+                    gr.Markdown("### Quản Lý Cuộc Trò Chuyện")
+                    gr.Markdown("*⚠️ Chỉ người dùng đã đăng nhập mới có thể sử dụng tính năng này.*")
+                    
+                    with gr.Row():
+                        new_chat_btn = gr.Button("➕ Tạo Cuộc Trò Chuyện Mới", variant="primary")
+                        refresh_sessions_btn = gr.Button("🔄 Làm Mới Danh Sách", variant="secondary")
+                    
+                    gr.Markdown("---")
+                    gr.Markdown("### Danh Sách Cuộc Trò Chuyện")
+                    
+                    sessions_display = gr.Markdown("Vui lòng đăng nhập để xem lịch sử chat")
+                
+                def refresh_sessions_fn(session_state):
+                    return get_chat_sessions_list(session_state)
+                
+                chat_history_btn.click(
+                    toggle_chat_history_panel,
+                    inputs=[chat_history_visible, session_state],
+                    outputs=[chat_history_visible, chat_history_panel]
+                ).then(
+                    refresh_sessions_fn,
+                    inputs=[session_state],
+                    outputs=[sessions_display]
+                )
+                
+                new_chat_btn.click(
+                    create_new_chat_session,
+                    inputs=[session_state],
+                    outputs=[session_state, chat_interface.chatbot]
+                ).then(
+                    refresh_sessions_fn,
+                    inputs=[session_state],
+                    outputs=[sessions_display]
+                )
+                
+                refresh_sessions_btn.click(
+                    refresh_sessions_fn,
+                    inputs=[session_state],
+                    outputs=[sessions_display]
+                )
+                
+                app.load(
+                    refresh_sessions_fn,
+                    inputs=[session_state],
+                    outputs=[sessions_display]
+                )
             
             with gr.Tab("📁 Quản Lý Tài Liệu"):
                 # Kiểm tra đăng nhập để hiển thị upload
@@ -1323,77 +1360,6 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Chatbot Hành Chính Việt Nam") 
                 ).then(
                     update_file_dropdown,
                     outputs=[file_selection_dropdown]
-                )
-            
-            with gr.Tab("📜 Lịch Sử Chat"):
-                gr.Markdown("### Quản Lý Cuộc Trò Chuyện")
-                gr.Markdown("*⚠️ Chỉ người dùng đã đăng nhập mới có thể sử dụng tính năng này.*")
-                
-                with gr.Row():
-                    new_chat_btn = gr.Button("➕ Tạo Cuộc Trò Chuyện Mới", variant="primary")
-                    refresh_sessions_btn = gr.Button("🔄 Làm Mới Danh Sách", variant="secondary")
-                
-                gr.Markdown("---")
-                gr.Markdown("### Danh Sách Cuộc Trò Chuyện")
-                
-                sessions_display = gr.Markdown("Vui lòng đăng nhập để xem lịch sử chat")
-                
-                session_dropdown = gr.Dropdown(
-                    label="Chọn cuộc trò chuyện",
-                    choices=[],
-                    interactive=True
-                )
-                
-                with gr.Row():
-                    view_detail_btn = gr.Button("👁️ Xem Chi Tiết", variant="secondary")
-                    load_to_chat_btn = gr.Button("📥 Load vào Chat", variant="primary")
-                    delete_session_btn = gr.Button("🗑️ Xóa", variant="stop")
-                
-                gr.Markdown("---")
-                gr.Markdown("### Chi Tiết Cuộc Trò Chuyện")
-                
-                session_detail_display = gr.Markdown("Chọn một cuộc trò chuyện để xem chi tiết")
-                
-                # Event handlers cho tab lịch sử
-                def refresh_sessions_fn(session_state):
-                    text, choices = get_chat_sessions_list(session_state)
-                    return text, gr.Dropdown(choices=choices, value=choices[0] if choices else None)
-                
-                new_chat_btn.click(
-                    create_new_chat_session,
-                    inputs=[session_state],
-                    outputs=[session_state, chat_interface.chatbot]
-                )
-                
-                refresh_sessions_btn.click(
-                    refresh_sessions_fn,
-                    inputs=[session_state],
-                    outputs=[sessions_display, session_dropdown]
-                )
-                
-                view_detail_btn.click(
-                    view_session_detail,
-                    inputs=[session_dropdown, session_state],
-                    outputs=[session_detail_display]
-                )
-                
-                load_to_chat_btn.click(
-                    load_session_to_chat,
-                    inputs=[session_dropdown, session_state],
-                    outputs=[session_state, chat_interface.chatbot]
-                )
-                
-                delete_session_btn.click(
-                    delete_session_fn,
-                    inputs=[session_dropdown, session_state],
-                    outputs=[sessions_display, session_dropdown]
-                )
-                
-                # Auto-refresh khi load tab
-                app.load(
-                    refresh_sessions_fn,
-                    inputs=[session_state],
-                    outputs=[sessions_display, session_dropdown]
                 )
             
             with gr.Tab("ℹ️ Hướng Dẫn"):

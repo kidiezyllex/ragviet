@@ -5,6 +5,7 @@ import faiss
 import numpy as np
 import json
 import os
+from collections import defaultdict
 from typing import List, Dict, Tuple, Optional
 from sentence_transformers import SentenceTransformer
 import logging
@@ -32,6 +33,7 @@ class VectorStore:
         self.metadata_path = metadata_path
         self.index = None
         self.metadata = []
+        self.metadata_by_file = defaultdict(list)
         
         logger.info(f"Đang tải embedding model: {embedding_model_name}")
         try:
@@ -57,6 +59,14 @@ class VectorStore:
         
         self.dimension = self.encoder.get_sentence_embedding_dimension()
         self.load_index()
+
+    def _build_file_index(self):
+        """Rebuild quick lookup map cho metadata theo filename"""
+        self.metadata_by_file = defaultdict(list)
+        for meta in self.metadata:
+            self.metadata_by_file[meta["filename"]].append(meta)
+        for entries in self.metadata_by_file.values():
+            entries.sort(key=lambda x: (x.get("page_number", 0), x.get("chunk_id", 0)))
     
     def load_index(self):
         """Load FAISS index và metadata từ disk"""
@@ -65,6 +75,7 @@ class VectorStore:
                 self.index = faiss.read_index(self.index_path)
                 with open(self.metadata_path, 'r', encoding='utf-8') as f:
                     self.metadata = json.load(f)
+                self._build_file_index()
                 logger.info(f"Đã load {self.index.ntotal} vectors từ index")
             except Exception as e:
                 logger.error(f"Lỗi khi load index: {str(e)}")
@@ -76,6 +87,7 @@ class VectorStore:
         """Tạo FAISS index mới"""
         self.index = faiss.IndexFlatL2(self.dimension)
         self.metadata = []
+        self.metadata_by_file = defaultdict(list)
         logger.info(f"Đã tạo FAISS index mới với dimension {self.dimension}")
     
     def save_index(self):
@@ -112,12 +124,16 @@ class VectorStore:
         self.index.add(embeddings)
         
         for chunk in chunks:
-            self.metadata.append({
+            meta_entry = {
                 "text": chunk["text"],
                 "filename": chunk["metadata"]["filename"],
                 "page_number": chunk["metadata"]["page_number"],
                 "chunk_id": chunk["metadata"]["chunk_id"]
-            })
+            }
+            self.metadata.append(meta_entry)
+            filename = meta_entry["filename"]
+            self.metadata_by_file[filename].append(meta_entry)
+            self.metadata_by_file[filename].sort(key=lambda x: (x.get("page_number", 0), x.get("chunk_id", 0)))
         
         self.save_index()
         logger.info(f"Đã thêm {len(chunks)} chunks vào vector store")
@@ -189,6 +205,7 @@ class VectorStore:
         self._create_new_index()
         self.index.add(embeddings)
         self.metadata = new_metadata
+        self._build_file_index()
         
         self.save_index()
         logger.info(f"Đã xóa file {filename}, còn lại {len(self.metadata)} chunks")
@@ -196,6 +213,7 @@ class VectorStore:
     def clear_all(self):
         """Xóa toàn bộ vector store"""
         self._create_new_index()
+        self.metadata_by_file = defaultdict(list)
         self.save_index()
         logger.info("Đã xóa toàn bộ vector store")
     
@@ -245,15 +263,17 @@ class VectorStore:
         for chunk in chunks:
             filename = chunk["filename"]
             page_num = chunk.get("page_number", 0)
-            
-            for i, meta in enumerate(self.metadata):
-                if meta["filename"] == filename:
-                    meta_page = meta.get("page_number", 0)
-                    if abs(meta_page - page_num) <= page_range and meta_page != page_num:
-                        chunk_key = (meta["filename"], meta.get("page_number", 0), meta.get("chunk_id", ""))
-                        if chunk_key not in seen_chunks:
-                            seen_chunks.add(chunk_key)
-                            expanded_chunks.append(meta.copy())
+            file_chunks = self.metadata_by_file.get(filename, [])
+            if not file_chunks:
+                continue
+
+            for meta in file_chunks:
+                meta_page = meta.get("page_number", 0)
+                if abs(meta_page - page_num) <= page_range and meta_page != page_num:
+                    chunk_key = (meta["filename"], meta.get("page_number", 0), meta.get("chunk_id", ""))
+                    if chunk_key not in seen_chunks:
+                        seen_chunks.add(chunk_key)
+                        expanded_chunks.append(meta.copy())
         
         expanded_chunks.sort(key=lambda x: (
             x.get("filename", ""),

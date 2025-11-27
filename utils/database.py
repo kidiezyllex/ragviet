@@ -383,3 +383,23 @@ class Database:
             logger.error(f"Lỗi khi xóa chat session: {str(e)}")
             return False
 
+    def get_last_message_of_session(self, session_id: str) -> Optional[Dict]:
+        """
+        Lấy message gần nhất của một session
+
+        Args:
+            session_id: ID của session
+        """
+        try:
+            message = self.db.chat_history.find_one(
+                {"session_id": session_id},
+                sort=[("timestamp", -1)]
+            )
+            if message:
+                message["_id"] = str(message["_id"])
+                message["timestamp"] = message["timestamp"].isoformat()
+            return message
+        except Exception as e:
+            logger.error(f"Lỗi khi lấy message gần nhất của session: {str(e)}")
+            return None
+
