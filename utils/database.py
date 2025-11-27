@@ -4,14 +4,28 @@ Module quản lý MongoDB database cho users và chat history
 import os
 from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure, DuplicateKeyError
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Any
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 import hashlib
 import secrets
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def _format_timestamp(value: Optional[Any]) -> Optional[str]:
+    """Đưa timestamp về ISO 8601 (UTC) với hậu tố Z."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
+        return dt.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    return str(value)
 
 
 class Database:
@@ -245,7 +259,7 @@ class Database:
             
             for msg in messages:
                 msg["_id"] = str(msg["_id"])
-                msg["timestamp"] = msg["timestamp"].isoformat()
+                msg["timestamp"] = _format_timestamp(msg["timestamp"])
             
             return list(reversed(messages))  # Trả về theo thứ tự cũ -> mới
         except Exception as e:
@@ -309,8 +323,8 @@ class Database:
             
             for session in sessions:
                 session["_id"] = str(session["_id"])
-                session["created_at"] = session["created_at"].isoformat()
-                session["updated_at"] = session["updated_at"].isoformat()
+                session["created_at"] = _format_timestamp(session["created_at"])
+                session["updated_at"] = _format_timestamp(session["updated_at"])
             
             return sessions
         except Exception as e:
@@ -334,7 +348,7 @@ class Database:
             
             for msg in messages:
                 msg["_id"] = str(msg["_id"])
-                msg["timestamp"] = msg["timestamp"].isoformat()
+                msg["timestamp"] = _format_timestamp(msg["timestamp"])
             
             return messages
         except Exception as e:
@@ -397,9 +411,83 @@ class Database:
             )
             if message:
                 message["_id"] = str(message["_id"])
-                message["timestamp"] = message["timestamp"].isoformat()
+                message["timestamp"] = _format_timestamp(message["timestamp"])
             return message
         except Exception as e:
             logger.error(f"Lỗi khi lấy message gần nhất của session: {str(e)}")
             return None
+
+    def get_full_chat_history(self, user_id: str, limit_sessions: int = 50) -> Dict:
+        """
+        Trả về lịch sử chat đầy đủ của user theo format:
+        {
+            "user_id": ...,
+            "chat_sessions": [
+                {
+                    "session_id": ...,
+                    "title": <câu hỏi user mới nhất trong session>,
+                    "created_at": ...,
+                    "updated_at": ...,
+                    "messages": [
+                        {"role": "user" | "assistant", "content": ..., "timestamp": ...},
+                        ...
+                    ]
+                },
+                ...
+            ]
+        }
+        """
+        try:
+            sessions = self.get_chat_sessions(user_id, limit=limit_sessions)
+            result_sessions: List[Dict] = []
+
+            for session in sessions:
+                session_id = session["session_id"]
+                # Lấy toàn bộ messages của session (theo thứ tự thời gian)
+                raw_messages = self.get_session_messages(session_id)
+
+                messages: List[Dict] = []
+                last_user_question: Optional[str] = None
+
+                for entry in raw_messages:
+                    ts = _format_timestamp(entry.get("timestamp"))
+                    # Mỗi entry trong chat_history hiện tại là một cặp Q/A
+                    user_msg = entry.get("message")
+                    if user_msg:
+                        messages.append({
+                            "role": "user",
+                            "content": user_msg,
+                            "timestamp": ts,
+                        })
+                        last_user_question = user_msg
+                    
+                    assistant_msg = entry.get("response")
+                    if assistant_msg:
+                        messages.append({
+                            "role": "assistant",
+                            "content": assistant_msg,
+                            "timestamp": ts,
+                        })
+                
+                title = last_user_question or "Cuộc trò chuyện mới"
+                last_message_ts = messages[-1]["timestamp"] if messages else session.get("updated_at")
+
+                result_sessions.append({
+                    "session_id": session_id,
+                    "title": title,
+                    "created_at": _format_timestamp(session.get("created_at")),
+                    "updated_at": last_message_ts or _format_timestamp(session.get("updated_at")),
+                    "messages": messages,
+                })
+
+            return {
+                "user_id": user_id,
+                "chat_sessions": result_sessions,
+            }
+        except Exception as e:
+            logger.error(f"Lỗi khi lấy full chat history cho user {user_id}: {str(e)}")
+            return {
+                "user_id": user_id,
+                "chat_sessions": [],
+            }
 

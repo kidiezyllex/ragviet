@@ -350,14 +350,21 @@ def chat_interface_fn(message, history, session_id: Optional[str] = None, select
     if not message.strip():
         return ""
     
+    # Session ID đã được xử lý ở wrapper, không cần tạo mới ở đây
+    # Chỉ cần đảm bảo chat_session_id được truyền vào đúng
+
+    
     natural_response = get_natural_response(message)
     if natural_response:
         if session_id and database:
             user = auth_manager.get_user_from_session(session_id)
             if user:
+                # Đảm bảo có chat_session_id trước khi lưu
+                if not chat_session_id:
+                    chat_session_id = database.create_chat_session(user["user_id"])
                 database.save_chat_message(user["user_id"], message, natural_response, selected_file, chat_session_id)
                 if chat_session_id:
-                    database.update_session(chat_session_id)
+                    database.update_session(chat_session_id, title=message)
         return natural_response
     
     stats = vector_store.get_stats()
@@ -377,9 +384,13 @@ def chat_interface_fn(message, history, session_id: Optional[str] = None, select
             if session_id and database:
                 user = auth_manager.get_user_from_session(session_id)
                 if user:
+                    # Đảm bảo có chat_session_id trước khi lưu
+                    if not chat_session_id:
+                        chat_session_id = database.create_chat_session(user["user_id"])
                     database.save_chat_message(user["user_id"], message, response, selected_file, chat_session_id)
                     if chat_session_id:
-                        database.update_session(chat_session_id)
+                        # Cập nhật tiêu đề session bằng câu hỏi mới nhất
+                        database.update_session(chat_session_id, title=message)
             
             return response
         
@@ -392,9 +403,13 @@ def chat_interface_fn(message, history, session_id: Optional[str] = None, select
         if session_id and database:
             user = auth_manager.get_user_from_session(session_id)
             if user:
+                # Đảm bảo có chat_session_id trước khi lưu
+                if not chat_session_id:
+                    chat_session_id = database.create_chat_session(user["user_id"])
                 database.save_chat_message(user["user_id"], message, answer, selected_file, chat_session_id)
                 if chat_session_id:
-                    database.update_session(chat_session_id)
+                    # Cập nhật tiêu đề session bằng câu hỏi mới nhất
+                    database.update_session(chat_session_id, title=message)
         
         return answer
         
@@ -786,17 +801,23 @@ def get_chat_sessions_list(session_state):
             return text
         return text[:limit - 3] + "..."
     
-    from datetime import datetime
+    from datetime import datetime, timedelta
     
     session_lines = []
     for session in sessions:
-        updated_time = datetime.fromisoformat(session["updated_at"]).strftime("%d/%m/%Y %H:%M")
+        # Convert UTC to UTC+7 (Vietnam Time)
+        utc_time = datetime.fromisoformat(session["updated_at"].replace("Z", "+00:00"))
+        vn_time = utc_time + timedelta(hours=7)
+        updated_time = vn_time.strftime("%d/%m/%Y %H:%M")
+        
         last_message = database.get_last_message_of_session(session["session_id"])
         last_question = last_message["message"] if last_message and last_message.get("message") else "Chưa có câu hỏi nào"
         short_question = _shorten(last_question)
         session_lines.append(f"- [{updated_time}] {short_question}")
     
-    return "\n".join(session_lines)
+    result = "\n".join(session_lines)
+    print(f"Chat history response:\n{result}")
+    return result
 
 
 def toggle_chat_history_panel(is_visible, session_state):
@@ -1069,19 +1090,30 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Chatbot Hành Chính Việt Nam") 
                 
                 if (restoreInput) {
                     console.log('Đã tìm thấy restore input, đang trigger...');
+                    // Set value directly
                     restoreInput.value = savedSession;
+                    
+                    // Trigger events manually to ensure Gradio catches the change
                     restoreInput.dispatchEvent(new Event('input', { bubbles: true }));
                     restoreInput.dispatchEvent(new Event('change', { bubbles: true }));
+                    
+                    // Try to trigger React/Gradio internal state update if possible (hacky but sometimes needed)
+                    const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
+                    if (nativeInputValueSetter) {
+                        nativeInputValueSetter.call(restoreInput, savedSession);
+                        restoreInput.dispatchEvent(new Event('input', { bubbles: true }));
+                    }
                 } else {
                     console.log('Chưa tìm thấy restore input, thử lại sau...');
                 }
             }
         }
         
-        // Thử restore nhiều lần
+        // Thử restore nhiều lần với khoảng thời gian dài hơn
         setTimeout(tryRestoreSession, 1000);
         setTimeout(tryRestoreSession, 2000);
         setTimeout(tryRestoreSession, 3000);
+        setTimeout(tryRestoreSession, 5000);
     </script>
     </style>
     """)
@@ -1122,7 +1154,13 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Chatbot Hành Chính Việt Nam") 
             background: var(--background-fill-secondary);
         }
         #restore_session_input {
-            display: none !important;
+            position: absolute !important;
+            left: -9999px !important;
+            opacity: 0 !important;
+            pointer-events: none !important;
+            height: 1px !important;
+            width: 1px !important;
+            overflow: hidden !important;
         }
     </style>
     """)
@@ -1162,15 +1200,15 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Chatbot Hành Chính Việt Nam") 
             with gr.Column(visible=False) as forgot_form:
                 gr.Markdown("### Quên Mật Khẩu")
                 forgot_email = gr.Textbox(label="Email", placeholder="Nhập email đã đăng ký")
-                forgot_btn = gr.Button("Gửi Token Reset", variant="primary", size="lg")
+                forgot_btn = gr.Button("Gửi mã OTP", variant="primary", size="lg")
                 forgot_links_col = gr.Column()
                 with forgot_links_col:
                     link_login_from_forgot = gr.Button("Quay lại đăng nhập", variant="plain", size="sm", elem_classes="link-button")
-                    link_reset_from_forgot = gr.Button("Đã có token? Đặt lại mật khẩu", variant="plain", size="sm", elem_classes="link-button")
+                    link_reset_from_forgot = gr.Button("Đã có OTP? Đặt lại mật khẩu", variant="plain", size="sm", elem_classes="link-button")
             
             with gr.Column(visible=False) as reset_form:
                 gr.Markdown("### Đặt Lại Mật Khẩu")
-                reset_token = gr.Textbox(label="Token Reset", placeholder="Nhập token đã nhận")
+                reset_token = gr.Textbox(label="Mã OTP", placeholder="Nhập mã OTP đã nhận")
                 reset_new_password = gr.Textbox(label="Mật khẩu mới", type="password", placeholder="Tối thiểu 6 ký tự")
                 reset_confirm_password = gr.Textbox(label="Xác nhận mật khẩu mới", type="password", placeholder="Nhập lại mật khẩu")
                 reset_btn = gr.Button("Đặt Lại Mật Khẩu", variant="primary", size="lg")
@@ -1206,24 +1244,40 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Chatbot Hành Chính Việt Nam") 
                 )
                 
                 # Chat interface
-                def chat_wrapper(message, history):
+                def chat_wrapper(message, history, session_state_val):
                     session_id = None
                     selected_file = None
                     chat_session_id = None
-                    if isinstance(session_state.value, dict):
-                        session_id = session_state.value.get("value")
-                        selected_file = session_state.value.get("selected_file")
-                        chat_session_id = session_state.value.get("chat_session_id")
-                    return chat_interface_fn(message, history, session_id, selected_file, chat_session_id)
+                    
+                    # session_state_val được truyền vào từ additional_inputs
+                    if isinstance(session_state_val, dict):
+                        session_id = session_state_val.get("value")
+                        selected_file = session_state_val.get("selected_file")
+                        chat_session_id = session_state_val.get("chat_session_id")
+                    
+                    # Nếu user đã đăng nhập nhưng chưa có chat_session_id, tạo session mới
+                    if session_id and database and not chat_session_id:
+                        user = auth_manager.get_user_from_session(session_id)
+                        if user:
+                            chat_session_id = database.create_chat_session(user["user_id"])
+                            # Cập nhật session_state ngay lập tức (lưu ý: cái này chỉ update local dict, 
+                            # không update lại state của Gradio trừ khi return, nhưng ChatInterface không support return state)
+                            if isinstance(session_state_val, dict):
+                                session_state_val["chat_session_id"] = chat_session_id
+                    
+                    response = chat_interface_fn(message, history, session_id, selected_file, chat_session_id)
+                    
+                    return response
                 
                 chat_interface = gr.ChatInterface(
                     fn=chat_wrapper,
+                    additional_inputs=[session_state],
                     title="Chat với RagVietBot",
                     description="Đặt câu hỏi về nội dung các tài liệu đã upload",
                     examples=[
-                        "Tóm tắt nội dung chính của tài liệu",
-                        "Các quy định về thủ tục hành chính là gì?",
-                        "Thời hạn xử lý hồ sơ là bao lâu?"
+                        ["Tóm tắt nội dung chính của tài liệu", None],
+                        ["Các quy định về thủ tục hành chính là gì?", None],
+                        ["Thời hạn xử lý hồ sơ là bao lâu?", None]
                     ],
                     cache_examples=False
                 )
@@ -1231,8 +1285,6 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Chatbot Hành Chính Việt Nam") 
                 chat_history_btn = gr.Button("📜 Lịch sử chat", variant="secondary", elem_id="chat-history-btn")
                 with gr.Column(visible=False, elem_id="chat-history-panel") as chat_history_panel:
                     gr.Markdown("### Quản Lý Cuộc Trò Chuyện")
-                    gr.Markdown("*⚠️ Chỉ người dùng đã đăng nhập mới có thể sử dụng tính năng này.*")
-                    
                     with gr.Row():
                         new_chat_btn = gr.Button("➕ Tạo Cuộc Trò Chuyện Mới", variant="primary")
                         refresh_sessions_btn = gr.Button("🔄 Làm Mới Danh Sách", variant="secondary")
@@ -1369,7 +1421,7 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Chatbot Hành Chính Việt Nam") 
         ### 1. Đăng Ký / Đăng Nhập
         - **Đăng ký**: Tạo tài khoản mới với email và mật khẩu
         - **Đăng nhập**: Đăng nhập để sử dụng đầy đủ tính năng
-        - **Quên mật khẩu**: Yêu cầu token reset và đặt lại mật khẩu
+        - **Quên mật khẩu**: Yêu cầu mã OTP và đặt lại mật khẩu
         - **Lưu ý**: Chỉ người dùng đã đăng nhập mới có thể upload file
         
         ### 2. Upload Tài Liệu (Chỉ khi đã đăng nhập)
