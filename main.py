@@ -69,16 +69,15 @@ def generate_answer(query: str, context_chunks: List[Dict], selected_file: Optio
         selected_file: File được chọn (nếu có)
         
     Returns:
-        Câu trả lời
+        Câu trả lời với định dạng markdown
     """
     if not context_chunks:
         return "Trong các tài liệu đã upload chưa có thông tin về nội dung này."
     
-    # Tổ chức context theo file và trang để dễ đọc hơn
     context_by_file = {}
     for chunk in context_chunks:
         filename = chunk['filename']
-        page = chunk['page_number']
+        page = chunk.get('page_number', 0)
         key = f"{filename}_page_{page}"
         if key not in context_by_file:
             context_by_file[key] = {
@@ -88,15 +87,19 @@ def generate_answer(query: str, context_chunks: List[Dict], selected_file: Optio
             }
         context_by_file[key]["texts"].append(chunk['text'])
     
-    # Tạo context text có cấu trúc tốt hơn
+    sorted_keys = sorted(context_by_file.keys(), key=lambda k: (context_by_file[k]['filename'], context_by_file[k]['page']))
+    
     context_parts = []
-    for key, data in context_by_file.items():
+    for key in sorted_keys:
+        data = context_by_file[key]
         combined_text = " ".join(data["texts"])
-        context_parts.append(f"[Nguồn: {data['filename']} - Trang {data['page']}]\n{combined_text}")
+        combined_text = " ".join(combined_text.split())
+        # Loại bỏ trích dẫn nguồn, chỉ giữ nội dung
+        context_parts.append(combined_text)
     
     context_text = "\n\n---\n\n".join(context_parts)
     
-    # Cải thiện prompt để tăng độ chính xác và đầy đủ
+    # Cải thiện prompt để tăng độ chính xác, đầy đủ và có định dạng đẹp
     file_context = f" (trong file: {selected_file})" if selected_file else ""
     prompt = f"""Bạn là trợ lý hành chính Việt Nam cực kỳ chính xác và chuyên nghiệp. 
 Nhiệm vụ của bạn là trả lời câu hỏi dựa HOÀN TOÀN vào các tài liệu tham khảo được cung cấp bên dưới.
@@ -106,17 +109,41 @@ TÀI LIỆU THAM KHẢO{file_context}:
 
 CÂU HỎI: {query}
 
-YÊU CẦU TRẢ LỜI:
-1. Đọc kỹ và phân tích tất cả các đoạn tài liệu tham khảo liên quan đến câu hỏi.
-2. Trả lời ĐẦY ĐỦ và CHÍNH XÁC dựa trên thông tin trong tài liệu. Nếu có nhiều điểm liên quan, hãy liệt kê tất cả.
-3. Trích dẫn nguyên văn các đoạn quan trọng và ghi rõ nguồn theo format: "[Tên file - Trang X]".
-4. Nếu thông tin có trong nhiều trang, hãy tổng hợp và trình bày một cách logic, có cấu trúc.
-5. Sử dụng ngôn ngữ hành chính chuẩn mực, rõ ràng, dễ hiểu.
-6. Nếu không tìm thấy thông tin chính xác trong tài liệu, hãy trả lời: "Trong các tài liệu đã upload chưa có thông tin về nội dung này."
-7. KHÔNG được tự bịa thêm thông tin bên ngoài tài liệu.
-8. KHÔNG được nói "dựa trên kiến thức của tôi" hoặc các cụm từ tương tự.
+YÊU CẦU TRẢ LỜI (QUAN TRỌNG - PHẢI TUÂN THỦ):
+1. **ĐỌC KỸ TOÀN BỘ TÀI LIỆU THAM KHẢO**: Phân tích tất cả các đoạn văn bản được cung cấp, đặc biệt chú ý đến các câu văn hoàn chỉnh và các đoạn liên quan. Nội dung có thể được phân chia giữa các phần khác nhau, hãy kết hợp tất cả thông tin liên quan.
 
-Hãy trả lời một cách chi tiết và đầy đủ:
+2. **TRẢ LỜI ĐẦY ĐỦ - KHÔNG ĐƯỢC CẮT CỤT**: 
+   - Nếu trong tài liệu có câu như "được quy định như sau:" hoặc "bao gồm:" thì BẮT BUỘC phải liệt kê đầy đủ nội dung tiếp theo.
+   - Nếu có danh sách, bảng, hoặc các mục liệt kê, phải trích dẫn ĐẦY ĐỦ tất cả các mục.
+   - KHÔNG được dừng lại ở giữa chừng, KHÔNG được để câu trả lời bị cắt cụt.
+   - Nếu thông tin dài, vẫn phải trích dẫn đầy đủ, có thể chia thành nhiều đoạn.
+   - Kết hợp thông tin từ các phần khác nhau của tài liệu nếu chúng liên quan đến cùng một chủ đề.
+
+3. **SỬ DỤNG ĐỊNH DẠNG MARKDOWN ĐỂ LÀM ĐẸP**:
+   - Sử dụng **bold** cho các tiêu đề và điểm quan trọng: **Tiêu đề**
+   - Sử dụng *italic* cho nhấn mạnh: *nhấn mạnh*
+   - Sử dụng danh sách có dấu đầu dòng (-) hoặc đánh số (1., 2., 3.) cho các mục liệt kê
+   - Sử dụng > cho trích dẫn quan trọng
+   - Sử dụng `code` cho các số, mã, hoặc thuật ngữ kỹ thuật
+   - Chia thành các đoạn văn rõ ràng với khoảng trắng giữa các đoạn
+
+4. **CẤU TRÚC TRẢ LỜI**:
+   - Bắt đầu với một câu tóm tắt ngắn gọn (nếu phù hợp)
+   - Trình bày thông tin theo cấu trúc logic, có thể chia thành các phần nhỏ với tiêu đề phụ
+   - Sử dụng danh sách để liệt kê các điểm quan trọng
+   - Kết hợp thông tin từ nhiều phần của tài liệu một cách mạch lạc
+
+5. **NGÔN NGỮ**: Sử dụng ngôn ngữ hành chính chuẩn mực, rõ ràng, dễ hiểu.
+
+6. **GIỚI HẠN**: 
+   - KHÔNG được tự bịa thêm thông tin bên ngoài tài liệu.
+   - KHÔNG được nói "dựa trên kiến thức của tôi" hoặc các cụm từ tương tự.
+   - KHÔNG được thêm trích dẫn nguồn dạng "[Tên file - Trang X]" vào câu trả lời.
+   - Nếu không tìm thấy thông tin chính xác trong tài liệu, hãy trả lời: "Trong các tài liệu đã upload chưa có thông tin về nội dung này."
+
+**LƯU Ý ĐẶC BIỆT**: Đảm bảo rằng câu trả lời của bạn HOÀN CHỈNH và ĐẦY ĐỦ. Nếu trong tài liệu có câu dẫn như "như sau:", "bao gồm:", "cụ thể:", v.v., bạn PHẢI trích dẫn đầy đủ nội dung tiếp theo, không được dừng lại ở đó. Hãy kết hợp thông tin từ các phần khác nhau của tài liệu nếu chúng cùng đề cập đến chủ đề được hỏi.
+
+Hãy trả lời một cách chi tiết, đầy đủ và có định dạng đẹp:
 """
     
     if llm_client is None:
@@ -134,9 +161,40 @@ Vui lòng thêm GROQ_API_KEY vào file .env để chatbot có thể trả lời 
                     model=llm_model,
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.1,
-                    max_tokens=2048  # Tăng max_tokens để trả lời đầy đủ hơn
+                    max_tokens=4096  # Tăng max_tokens lên 4096 để đảm bảo trả lời đầy đủ
                 )
-                return response.choices[0].message.content
+                answer = response.choices[0].message.content
+                if answer:
+                    answer_clean = answer.strip()
+                    incomplete_patterns = [
+                        answer_clean.endswith('như sau:'),
+                        answer_clean.endswith('như sau'),
+                        answer_clean.endswith('bao gồm:'),
+                        answer_clean.endswith('bao gồm'),
+                        answer_clean.endswith('cụ thể:'),
+                        answer_clean.endswith('cụ thể'),
+                        answer_clean.endswith('gồm:'),
+                        (answer_clean.endswith(':') and len(answer_clean.split('\n')) < 3)  # Kết thúc bằng : nhưng quá ngắn
+                    ]
+                    
+                    # Nếu phát hiện dấu hiệu bị cắt cụt, thử lại với max_tokens cao hơn
+                    if any(incomplete_patterns):
+                        logger.warning("Phát hiện câu trả lời có thể bị cắt cụt, thử lại với max_tokens cao hơn...")
+                        try:
+                            response = llm_client.chat.completions.create(
+                                model=llm_model,
+                                messages=[{"role": "user", "content": prompt}],
+                                temperature=0.1,
+                                max_tokens=8192  # Tăng lên 8192 nếu cần
+                            )
+                            new_answer = response.choices[0].message.content
+                            if len(new_answer) > len(answer):
+                                answer = new_answer
+                                logger.info("Đã lấy được câu trả lời đầy đủ hơn")
+                        except Exception as retry_error:
+                            logger.warning(f"Không thể retry với max_tokens cao hơn: {str(retry_error)}")
+                
+                return answer
             except Exception as model_error:
                 # Nếu model bị lỗi, thử model dự phòng (chỉ cho Groq)
                 if llm_provider == "groq":
@@ -149,10 +207,11 @@ Vui lòng thêm GROQ_API_KEY vào file .env để chatbot có thể trả lời 
                                 model=fallback_model,
                                 messages=[{"role": "user", "content": prompt}],
                                 temperature=0.1,
-                                max_tokens=2048
+                                max_tokens=4096
                             )
                             logger.info(f"Thành công với model: {fallback_model}")
-                            return response.choices[0].message.content
+                            answer = response.choices[0].message.content
+                            return answer
                         except Exception as e2:
                             logger.warning(f"Model {fallback_model} cũng không khả dụng: {str(e2)}")
                             continue
@@ -230,9 +289,8 @@ def get_uploaded_files() -> Tuple[str, List[str]]:
     files_list = "\n".join([f"📄 {filename}: {count} chunks" 
                            for filename, count in stats["files"].items()])
     
-    display_text = f"""**Tổng số tài liệu: {stats['total_files']}**
-**Tổng số chunks: {stats['total_chunks']}**
-
+    display_text = f"""- Tổng số tài liệu: {stats['total_files']}
+- Tổng số chunks: {stats['total_chunks']}
 {files_list}"""
     
     file_names = list(stats["files"].keys())
@@ -314,8 +372,8 @@ def chat_interface_fn(message, history, session_id: Optional[str] = None, select
     try:
         logger.info(f"Đang tìm kiếm câu trả lời cho: {message} (file: {selected_file})")
         
-        # Tìm kiếm với filter filename nếu có
-        search_results = vector_store.search(message, top_k=20, filename=selected_file)
+        # Tìm kiếm với filter filename nếu có - tăng top_k để có nhiều context hơn
+        search_results = vector_store.search(message, top_k=30, filename=selected_file)
         
         if not search_results:
             response = "Không tìm thấy thông tin liên quan trong các tài liệu đã upload."
@@ -330,7 +388,11 @@ def chat_interface_fn(message, history, session_id: Optional[str] = None, select
             
             return response
         
-        reranked_results = reranker.rerank(message, search_results, top_k=5)
+        # Mở rộng search results với các chunk từ các trang lân cận để liên kết nội dung giữa các trang
+        expanded_results = vector_store.get_adjacent_chunks(search_results, page_range=2)
+        
+        # Tăng top_k cho reranker để có nhiều context chunks hơn, đảm bảo đầy đủ thông tin
+        reranked_results = reranker.rerank(message, expanded_results, top_k=15)
         
         answer = generate_answer(message, reranked_results, selected_file)
         
@@ -834,7 +896,7 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Chatbot Hành Chính Việt Nam") 
             with gr.Tab("💬 Chat"):
                 # File selection dropdown
                 gr.Markdown("### Chọn File Để Hỏi (Tùy chọn)")
-                gr.Markdown("*Chọn một file cụ thể để tăng độ chính xác khi hỏi đáp. Để trống để tìm trong tất cả các file.*")
+                gr.Markdown("*Nếu bạn chưa đăng nhập, thì chỉ có thể sử dụng file mẫu có sẵn của chúng tôi. Vui lòng đăng nhập để sử dụng đầy đủ các tính năng nhé!*")
                 
                 file_selection_dropdown = gr.Dropdown(
                     label="Chọn file",
@@ -867,7 +929,7 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Chatbot Hành Chính Việt Nam") 
                 
                 chat_interface = gr.ChatInterface(
                     fn=chat_wrapper,
-                    title="Chat với Chatbot Hành Chính",
+                    title="Chat với RagVietBot",
                     description="Đặt câu hỏi về nội dung các tài liệu đã upload",
                     examples=[
                         "Tóm tắt nội dung chính của tài liệu",

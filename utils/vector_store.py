@@ -204,6 +204,77 @@ class VectorStore:
         self.save_index()
         logger.info("Đã xóa toàn bộ vector store")
     
+    def get_all_chunks_by_filename(self, filename: str) -> List[Dict]:
+        """
+        Lấy tất cả chunks của một file cụ thể
+        
+        Args:
+            filename: Tên file cần lấy
+            
+        Returns:
+            List các chunk của file đó
+        """
+        results = []
+        for i, meta in enumerate(self.metadata):
+            if meta["filename"] == filename:
+                result = meta.copy()
+                results.append(result)
+        
+        results.sort(key=lambda x: (x.get("page_number", 0), x.get("chunk_id", 0)))
+        logger.info(f"Đã lấy {len(results)} chunks từ file {filename}")
+        return results
+    
+    def get_adjacent_chunks(self, chunks: List[Dict], page_range: int = 2) -> List[Dict]:
+        """
+        Lấy các chunk từ các trang lân cận để liên kết nội dung giữa các trang
+        
+        Args:
+            chunks: List các chunk đã tìm được
+            page_range: Số trang trước và sau để lấy thêm (mặc định 2 trang)
+            
+        Returns:
+            List các chunk đã được mở rộng với các trang lân cận
+        """
+        if not chunks:
+            return []
+        
+        # Tạo set để tránh trùng lặp
+        seen_chunks = set()
+        expanded_chunks = []
+        
+        # Lấy các chunk gốc
+        for chunk in chunks:
+            chunk_key = (chunk["filename"], chunk.get("page_number", 0), chunk.get("chunk_id", ""))
+            if chunk_key not in seen_chunks:
+                seen_chunks.add(chunk_key)
+                expanded_chunks.append(chunk)
+        
+        # Tìm các chunk từ các trang lân cận
+        for chunk in chunks:
+            filename = chunk["filename"]
+            page_num = chunk.get("page_number", 0)
+            
+            # Tìm các chunk từ các trang lân cận
+            for i, meta in enumerate(self.metadata):
+                if meta["filename"] == filename:
+                    meta_page = meta.get("page_number", 0)
+                    # Lấy các trang trong khoảng [page_num - page_range, page_num + page_range]
+                    if abs(meta_page - page_num) <= page_range and meta_page != page_num:
+                        chunk_key = (meta["filename"], meta.get("page_number", 0), meta.get("chunk_id", ""))
+                        if chunk_key not in seen_chunks:
+                            seen_chunks.add(chunk_key)
+                            expanded_chunks.append(meta.copy())
+        
+        # Sắp xếp lại theo filename, page_number, chunk_id
+        expanded_chunks.sort(key=lambda x: (
+            x.get("filename", ""),
+            x.get("page_number", 0),
+            x.get("chunk_id", 0)
+        ))
+        
+        logger.info(f"Đã mở rộng từ {len(chunks)} chunks lên {len(expanded_chunks)} chunks (bao gồm {page_range} trang lân cận)")
+        return expanded_chunks
+    
     def get_stats(self) -> Dict:
         """Lấy thống kê về vector store"""
         files = {}
