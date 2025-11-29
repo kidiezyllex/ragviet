@@ -68,6 +68,10 @@ class Database:
         self.db.chat_sessions.create_index([("user_id", 1), ("created_at", -1)])
         self.db.chat_sessions.create_index("session_id", unique=True)
         
+        # Index cho auth_sessions collection
+        self.db.auth_sessions.create_index("session_id", unique=True)
+        self.db.auth_sessions.create_index("user_id")
+        
         logger.info("Đã tạo indexes")
     
     def create_user(self, username: str, email: str, password: str) -> Optional[Dict]:
@@ -416,6 +420,98 @@ class Database:
         except Exception as e:
             logger.error(f"Lỗi khi lấy message gần nhất của session: {str(e)}")
             return None
+    
+    def save_auth_session(self, session_id: str, user_id: str, user_data: Dict) -> bool:
+        """
+        Lưu auth session vào database
+        
+        Args:
+            session_id: ID của session
+            user_id: ID của user
+            user_data: Thông tin user (username, email)
+        """
+        try:
+            session_doc = {
+                "session_id": session_id,
+                "user_id": user_id,
+                "username": user_data.get("username"),
+                "email": user_data.get("email"),
+                "created_at": datetime.utcnow(),
+                "expires_at": None  # Sessions không hết hạn, có thể thêm logic hết hạn sau
+            }
+            
+            # Update nếu đã tồn tại, insert nếu chưa có
+            self.db.auth_sessions.update_one(
+                {"session_id": session_id},
+                {"$set": session_doc},
+                upsert=True
+            )
+            logger.info(f"Đã lưu auth session: {session_id} cho user: {user_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Lỗi khi lưu auth session: {str(e)}")
+            return False
+    
+    def get_auth_session(self, session_id: str) -> Optional[Dict]:
+        """
+        Lấy auth session từ database
+        
+        Args:
+            session_id: ID của session
+            
+        Returns:
+            User data nếu session hợp lệ, None nếu không
+        """
+        try:
+            session = self.db.auth_sessions.find_one({"session_id": session_id})
+            if session:
+                return {
+                    "user_id": str(session["user_id"]),
+                    "username": session.get("username"),
+                    "email": session.get("email")
+                }
+            return None
+        except Exception as e:
+            logger.error(f"Lỗi khi lấy auth session: {str(e)}")
+            return None
+    
+    def delete_auth_session(self, session_id: str) -> bool:
+        """
+        Xóa auth session
+        
+        Args:
+            session_id: ID của session
+        """
+        try:
+            result = self.db.auth_sessions.delete_one({"session_id": session_id})
+            logger.info(f"Đã xóa auth session: {session_id}")
+            return result.deleted_count > 0
+        except Exception as e:
+            logger.error(f"Lỗi khi xóa auth session: {str(e)}")
+            return False
+    
+    def load_all_auth_sessions(self) -> Dict[str, Dict]:
+        """
+        Tải tất cả auth sessions từ database (để restore khi server restart)
+        
+        Returns:
+            Dict {session_id: user_data}
+        """
+        try:
+            sessions = self.db.auth_sessions.find({})
+            result = {}
+            for session in sessions:
+                session_id = session["session_id"]
+                result[session_id] = {
+                    "user_id": str(session["user_id"]),
+                    "username": session.get("username"),
+                    "email": session.get("email")
+                }
+            logger.info(f"Đã tải {len(result)} auth sessions từ database")
+            return result
+        except Exception as e:
+            logger.error(f"Lỗi khi tải auth sessions: {str(e)}")
+            return {}
 
     def get_full_chat_history(self, user_id: str, limit_sessions: int = 50) -> Dict:
         """

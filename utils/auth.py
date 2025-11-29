@@ -25,7 +25,8 @@ class AuthManager:
             database: Instance của Database class
         """
         self.db = database
-        self.sessions = {}  # {session_id: user_data}
+        self.sessions = {}
+        self._load_sessions_from_db()
     
     def register(self, username: str, email: str, password: str) -> Dict:
         """
@@ -65,11 +66,14 @@ class AuthManager:
                 "email": user["email"]
             }
             self.sessions[session_id] = user_data
-            logger.info(f"User đăng nhập: {user['email']}")
+            # Lưu session vào database để tồn tại sau khi reload
+            self.db.save_auth_session(session_id, user_data["user_id"], user_data)
+            logger.info(f"User đăng nhập: {user['email']}, session_id: {session_id}")
             return {
                 "success": True,
                 "message": "Đăng nhập thành công!",
                 "session_id": session_id,
+                "access_token": session_id,  # Thêm access_token (giống session_id)
                 "user": user_data
             }
         else:
@@ -79,14 +83,24 @@ class AuthManager:
         """Đăng xuất"""
         if session_id in self.sessions:
             del self.sessions[session_id]
-            return True
-        return False
+        # Xóa session khỏi database
+        self.db.delete_auth_session(session_id)
+        return True
     
     def get_user_from_session(self, session_id: Optional[str]) -> Optional[Dict]:
         """Lấy thông tin user từ session"""
         if not session_id:
             return None
-        return self.sessions.get(session_id)
+        # Kiểm tra trong memory trước
+        if session_id in self.sessions:
+            return self.sessions[session_id]
+        # Nếu không có trong memory, thử load từ database (trường hợp server restart)
+        user_data = self.db.get_auth_session(session_id)
+        if user_data:
+            # Restore vào memory
+            self.sessions[session_id] = user_data
+            return user_data
+        return None
     
     def is_authenticated(self, session_id: Optional[str]) -> bool:
         """Kiểm tra user đã đăng nhập chưa"""
@@ -187,4 +201,13 @@ class AuthManager:
             return {"success": True, "message": "Đặt lại mật khẩu thành công! Vui lòng đăng nhập."}
         else:
             return {"success": False, "message": "Token không hợp lệ hoặc đã hết hạn"}
+    
+    def _load_sessions_from_db(self):
+        """Tải lại tất cả sessions từ database khi khởi động"""
+        try:
+            sessions = self.db.load_all_auth_sessions()
+            self.sessions.update(sessions)
+            logger.info(f"Đã tải {len(sessions)} sessions từ database")
+        except Exception as e:
+            logger.error(f"Lỗi khi tải sessions từ database: {str(e)}")
 

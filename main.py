@@ -7,267 +7,54 @@ from typing import List, Tuple, Dict, Optional
 import logging
 from dotenv import load_dotenv
 import shutil
-
-from utils.pdf_processor import PDFProcessor
-from utils.vector_store import VectorStore
-from utils.reranker import Reranker
-from utils.database import Database
-from utils.auth import AuthManager
+import json
 from utils.natural_language import is_natural_question, get_natural_response
+from api_client import (
+    api_login, api_register, api_logout, api_forgot_password, api_reset_password,
+    api_verify_session, api_chat_send, api_get_chat_sessions, api_create_chat_session,
+    api_upload_files, api_get_files, api_delete_file, api_clear_all_files,
+    api_get_chat_history
+)
 
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-PDF_STORAGE_DIR = "pdfs"
-FIXED_FILES_DIR = "fixed_pdfs"
-os.makedirs(PDF_STORAGE_DIR, exist_ok=True)
-os.makedirs(FIXED_FILES_DIR, exist_ok=True)
-os.makedirs("vector_store", exist_ok=True)
-
-pdf_processor = PDFProcessor(chunk_size=400, overlap=100)
-vector_store = VectorStore()
-reranker = Reranker()
-
-# Khởi tạo database và auth
-try:
-    database = Database()
-    auth_manager = AuthManager(database)
-    logger.info("Đã khởi tạo database và auth manager")
-except Exception as e:
-    logger.error(f"Lỗi khi khởi tạo database: {str(e)}")
-    database = None
-    auth_manager = None
-
-
-def get_llm_client():
-    """Khởi tạo LLM client (Groq, Together, hoặc OpenRouter)"""
-    if os.getenv("GROQ_API_KEY"):
-        try:
-            from groq import Groq
-            client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-            logger.info("Đã kết nối Groq API")
-            return client, "groq", "llama-3.3-70b-versatile"
-        except Exception as e:
-            logger.warning(f"Không thể kết nối Groq: {str(e)}")
-    
-    logger.warning("Chưa cấu hình API key cho LLM. Vui lòng thêm GROQ_API_KEY vào file .env")
-    return None, None, None
-
-
-llm_client, llm_provider, llm_model = get_llm_client()
-
-
-def generate_answer(query: str, context_chunks: List[Dict], selected_file: Optional[str] = None) -> str:
+def process_pdfs(files: List, session_state, progress=gr.Progress()):
     """
-    Sinh câu trả lời từ LLM dựa trên context (cải thiện để tăng độ chính xác và đầy đủ)
-    
-    Args:
-        query: Câu hỏi của người dùng
-        context_chunks: Các chunk context liên quan
-        selected_file: File được chọn (nếu có)
-        
-    Returns:
-        Câu trả lời với định dạng markdown
-    """
-    if not context_chunks:
-        return "Trong các tài liệu đã upload chưa có thông tin về nội dung này."
-    
-    context_by_file = {}
-    for chunk in context_chunks:
-        filename = chunk['filename']
-        page = chunk.get('page_number', 0)
-        key = f"{filename}_page_{page}"
-        if key not in context_by_file:
-            context_by_file[key] = {
-                "filename": filename,
-                "page": page,
-                "texts": []
-            }
-        context_by_file[key]["texts"].append(chunk['text'])
-    
-    sorted_keys = sorted(context_by_file.keys(), key=lambda k: (context_by_file[k]['filename'], context_by_file[k]['page']))
-    
-    context_parts = []
-    for key in sorted_keys:
-        data = context_by_file[key]
-        combined_text = " ".join(data["texts"])
-        combined_text = " ".join(combined_text.split())
-        context_parts.append(combined_text)
-    
-    context_text = "\n\n---\n\n".join(context_parts)
-    
-    file_context = f" (trong file: {selected_file})" if selected_file else ""
-    prompt = f"""Bạn là trợ lý hành chính Việt Nam cực kỳ chính xác và chuyên nghiệp. 
-Nhiệm vụ của bạn là trả lời câu hỏi dựa HOÀN TOÀN vào các tài liệu tham khảo được cung cấp bên dưới.
-
-TÀI LIỆU THAM KHẢO{file_context}:
-{context_text}
-
-CÂU HỎI: {query}
-
-YÊU CẦU TRẢ LỜI (QUAN TRỌNG - PHẢI TUÂN THỦ):
-1. **ĐỌC KỸ TOÀN BỘ TÀI LIỆU THAM KHẢO**: Phân tích tất cả các đoạn văn bản được cung cấp, đặc biệt chú ý đến các câu văn hoàn chỉnh và các đoạn liên quan. Nội dung có thể được phân chia giữa các phần khác nhau, hãy kết hợp tất cả thông tin liên quan.
-
-2. **TRẢ LỜI ĐẦY ĐỦ - KHÔNG ĐƯỢC CẮT CỤT**: 
-   - Nếu trong tài liệu có câu như "được quy định như sau:" hoặc "bao gồm:" thì BẮT BUỘC phải liệt kê đầy đủ nội dung tiếp theo.
-   - Nếu có danh sách, bảng, hoặc các mục liệt kê, phải trích dẫn ĐẦY ĐỦ tất cả các mục.
-   - KHÔNG được dừng lại ở giữa chừng, KHÔNG được để câu trả lời bị cắt cụt.
-   - Nếu thông tin dài, vẫn phải trích dẫn đầy đủ, có thể chia thành nhiều đoạn.
-   - Kết hợp thông tin từ các phần khác nhau của tài liệu nếu chúng liên quan đến cùng một chủ đề.
-
-3. **SỬ DỤNG ĐỊNH DẠNG MARKDOWN ĐỂ LÀM ĐẸP**:
-   - Sử dụng **bold** cho các tiêu đề và điểm quan trọng: **Tiêu đề**
-   - Sử dụng *italic* cho nhấn mạnh: *nhấn mạnh*
-   - Sử dụng danh sách có dấu đầu dòng (-) hoặc đánh số (1., 2., 3.) cho các mục liệt kê
-   - Sử dụng > cho trích dẫn quan trọng
-   - Sử dụng `code` cho các số, mã, hoặc thuật ngữ kỹ thuật
-   - Chia thành các đoạn văn rõ ràng với khoảng trắng giữa các đoạn
-
-4. **CẤU TRÚC TRẢ LỜI**:
-   - Bắt đầu với một câu tóm tắt ngắn gọn (nếu phù hợp)
-   - Trình bày thông tin theo cấu trúc logic, có thể chia thành các phần nhỏ với tiêu đề phụ
-   - Sử dụng danh sách để liệt kê các điểm quan trọng
-   - Kết hợp thông tin từ nhiều phần của tài liệu một cách mạch lạc
-
-5. **NGÔN NGỮ**: Sử dụng ngôn ngữ hành chính chuẩn mực, rõ ràng, dễ hiểu.
-
-6. **GIỚI HẠN**: 
-   - KHÔNG được tự bịa thêm thông tin bên ngoài tài liệu.
-   - KHÔNG được nói "dựa trên kiến thức của tôi" hoặc các cụm từ tương tự.
-   - KHÔNG được thêm trích dẫn nguồn dạng "[Tên file - Trang X]" vào câu trả lời.
-   - Nếu không tìm thấy thông tin chính xác trong tài liệu, hãy trả lời: "Trong các tài liệu đã upload chưa có thông tin về nội dung này."
-
-**LƯU Ý ĐẶC BIỆT**: Đảm bảo rằng câu trả lời của bạn HOÀN CHỈNH và ĐẦY ĐỦ. Nếu trong tài liệu có câu dẫn như "như sau:", "bao gồm:", "cụ thể:", v.v., bạn PHẢI trích dẫn đầy đủ nội dung tiếp theo, không được dừng lại ở đó. Hãy kết hợp thông tin từ các phần khác nhau của tài liệu nếu chúng cùng đề cập đến chủ đề được hỏi.
-
-Hãy trả lời một cách chi tiết, đầy đủ và có định dạng đẹp:
-"""
-    
-    if llm_client is None:
-        return f"""⚠️ Chưa cấu hình LLM API key. Đây là thông tin tìm được từ tài liệu:
-
-{context_text}
-
-Vui lòng thêm GROQ_API_KEY vào file .env để chatbot có thể trả lời tự động."""
-    
-    try:
-        if llm_provider in ["groq"]:
-            try:
-                response = llm_client.chat.completions.create(
-                    model=llm_model,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.1,
-                    max_tokens=4096  # Tăng max_tokens lên 4096 để đảm bảo trả lời đầy đủ
-                )
-                answer = response.choices[0].message.content
-                if answer:
-                    answer_clean = answer.strip()
-                    incomplete_patterns = [
-                        answer_clean.endswith('như sau:'),
-                        answer_clean.endswith('như sau'),
-                        answer_clean.endswith('bao gồm:'),
-                        answer_clean.endswith('bao gồm'),
-                        answer_clean.endswith('cụ thể:'),
-                        answer_clean.endswith('cụ thể'),
-                        answer_clean.endswith('gồm:'),
-                        (answer_clean.endswith(':') and len(answer_clean.split('\n')) < 3)  # Kết thúc bằng : nhưng quá ngắn
-                    ]
-                    
-                    if any(incomplete_patterns):
-                        logger.warning("Phát hiện câu trả lời có thể bị cắt cụt, thử lại với max_tokens cao hơn...")
-                        try:
-                            response = llm_client.chat.completions.create(
-                                model=llm_model,
-                                messages=[{"role": "user", "content": prompt}],
-                                temperature=0.1,
-                                max_tokens=8192  # Tăng lên 8192 nếu cần
-                            )
-                            new_answer = response.choices[0].message.content
-                            if len(new_answer) > len(answer):
-                                answer = new_answer
-                                logger.info("Đã lấy được câu trả lời đầy đủ hơn")
-                        except Exception as retry_error:
-                            logger.warning(f"Không thể retry với max_tokens cao hơn: {str(retry_error)}")
-                
-                return answer
-            except Exception as model_error:
-                if llm_provider == "groq":
-                    logger.warning(f"Model {llm_model} không khả dụng, thử model dự phòng...")
-                    fallback_models = ["mistral-saba-24b", "llama-3.1-8b-instant", "llama-3.1-70b-versatile"]
-                    for fallback_model in fallback_models:
-                        try:
-                            logger.info(f"Thử model dự phòng: {fallback_model}")
-                            response = llm_client.chat.completions.create(
-                                model=fallback_model,
-                                messages=[{"role": "user", "content": prompt}],
-                                temperature=0.1,
-                                max_tokens=4096
-                            )
-                            logger.info(f"Thành công với model: {fallback_model}")
-                            answer = response.choices[0].message.content
-                            return answer
-                        except Exception as e2:
-                            logger.warning(f"Model {fallback_model} cũng không khả dụng: {str(e2)}")
-                            continue
-                    logger.error(f"Tất cả models đều không khả dụng")
-                    raise model_error
-                else:
-                    raise model_error
-        else:
-            return f"⚠️ LLM provider không được hỗ trợ. Thông tin từ tài liệu:\n\n{context_text}"
-    except Exception as e:
-        logger.error(f"Lỗi khi gọi LLM: {str(e)}")
-        return f"⚠️ Lỗi khi tạo câu trả lời: {str(e)}\n\nThông tin từ tài liệu:\n\n{context_text}"
-
-
-def process_pdfs(files: List, progress=gr.Progress()):
-    """
-    Xử lý nhiều file PDF với progress bar
+    Xử lý nhiều file PDF - gọi Django API
     
     Args:
         files: List các file PDF upload
+        session_state: Session state để lấy session_id
         progress: Gradio progress tracker
     """
     if not files:
         gr.Error("Vui lòng chọn ít nhất một file PDF")
         return
     
+    session_id = None
+    if isinstance(session_state, dict):
+        session_id = session_state.get("value")
+    
+    if not session_id:
+        gr.Error("Vui lòng đăng nhập để upload file. Người dùng chưa đăng nhập chỉ có thể sử dụng các file cố định.")
+        return
+    
     try:
         if progress:
-            progress(0, desc="Đang sao chép file...")
-        pdf_paths = []
-        for i, file in enumerate(files):
-            filename = os.path.basename(file.name)
-            dest_path = os.path.join(PDF_STORAGE_DIR, filename)
-            shutil.copy(file.name, dest_path)
-            pdf_paths.append(dest_path)
-            if progress:
-                progress((i + 1) / (len(files) * 3), desc=f"Đã sao chép {i + 1}/{len(files)} file...")
+            progress(0.5, desc="Đang upload file lên server...")
         
-        logger.info(f"Đang xử lý {len(pdf_paths)} file PDF...")
-        if progress:
-            progress(0.33, desc=f"Đang xử lý {len(pdf_paths)} file PDF...")
-        
-        all_chunks, pages_info = pdf_processor.process_multiple_pdfs(pdf_paths)
-        
-        if not all_chunks:
-            gr.Error("Không thể trích xuất văn bản từ các file PDF")
-            return
-        
-        if progress:
-            progress(0.66, desc="Đang tạo embeddings và lưu vào vector store...")
-        vector_store.add_documents(all_chunks)
+        result = api_upload_files(files, session_id)
         
         if progress:
             progress(1.0, desc="Hoàn tất!")
         
-        total_pages = sum(pages_info.values())
-        files_summary = "\n".join([f"  • {name}: {pages} trang" 
-                                   for name, pages in pages_info.items()])
-        
-        success_msg = f"Đã xử lý xong {len(pdf_paths)} tài liệu, tổng cộng {total_pages} trang. Bạn có thể đặt câu hỏi ngay!"
-        gr.Success(success_msg)
+        if result.get("success"):
+            gr.Success(result.get("message", "Đã upload file thành công!"))
+        else:
+            gr.Error(result.get("message", "Lỗi khi upload file"))
         
     except Exception as e:
         logger.error(f"Lỗi khi xử lý PDF: {str(e)}")
@@ -275,40 +62,41 @@ def process_pdfs(files: List, progress=gr.Progress()):
 
 
 def get_uploaded_files() -> Tuple[str, List[str]]:
-    """Lấy danh sách các file đã upload và danh sách tên file cho dropdown"""
-    stats = vector_store.get_stats()
+    """Lấy danh sách các file đã upload - gọi Django API"""
+    result = api_get_files()
     
-    if stats["total_files"] == 0:
+    if not result.get("success") or result.get("total_files", 0) == 0:
         return "Chưa có file nào được upload.", []
     
-    files_list = "\n".join([f"📄 {filename}: {count} chunks" 
-                           for filename, count in stats["files"].items()])
+    files = result.get("files", [])
+    files_list = "\n".join([f"📄 {file['filename']}: {file['chunks']} chunks" for file in files])
     
-    display_text = f"""- Tổng số tài liệu: {stats['total_files']}
-- Tổng số chunks: {stats['total_chunks']}
+    display_text = f"""- Tổng số tài liệu: {result['total_files']}
+- Tổng số chunks: {result['total_chunks']}
 {files_list}"""
     
-    file_names = list(stats["files"].keys())
+    file_names = [file['filename'] for file in files]
     return display_text, file_names
 
 
 def delete_file(filename: str) -> Tuple[str, gr.Dropdown]:
-    """Xóa một file cụ thể"""
+    """Xóa một file cụ thể - gọi Django API"""
     if not filename or not filename.strip():
         gr.Error("Vui lòng chọn file cần xóa")
         display, file_names = get_uploaded_files()
         return display, gr.Dropdown(choices=file_names, value=file_names[0] if file_names else None)
     
     try:
-        vector_store.delete_by_filename(filename)
+        result = api_delete_file(filename)
         
-        pdf_path = os.path.join(PDF_STORAGE_DIR, filename)
-        if os.path.exists(pdf_path):
-            os.remove(pdf_path)
-        
-        display, file_names = get_uploaded_files()
-        gr.Success(f"Đã xóa file: {filename}")
-        return display, gr.Dropdown(choices=file_names, value=file_names[0] if file_names else None)
+        if result.get("success"):
+            display, file_names = get_uploaded_files()
+            gr.Success(result.get("message", f"Đã xóa file: {filename}"))
+            return display, gr.Dropdown(choices=file_names, value=file_names[0] if file_names else None)
+        else:
+            gr.Error(result.get("message", "Lỗi khi xóa file"))
+            display, file_names = get_uploaded_files()
+            return display, gr.Dropdown(choices=file_names, value=file_names[0] if file_names else None)
     except Exception as e:
         logger.error(f"Lỗi khi xóa file: {str(e)}")
         gr.Error(f"Lỗi: {str(e)}")
@@ -317,18 +105,18 @@ def delete_file(filename: str) -> Tuple[str, gr.Dropdown]:
 
 
 def clear_all_documents() -> Tuple[str, gr.Dropdown]:
-    """Xóa toàn bộ tài liệu"""
+    """Xóa toàn bộ tài liệu - gọi Django API"""
     try:
-        vector_store.clear_all()
+        result = api_clear_all_files()
         
-        for filename in os.listdir(PDF_STORAGE_DIR):
-            file_path = os.path.join(PDF_STORAGE_DIR, filename)
-            if os.path.isfile(file_path):
-                os.remove(file_path)
-        
-        display, file_names = get_uploaded_files()
-        gr.Success("Đã xóa toàn bộ tài liệu")
-        return display, gr.Dropdown(choices=file_names, value=None)
+        if result.get("success"):
+            display, file_names = get_uploaded_files()
+            gr.Success(result.get("message", "Đã xóa toàn bộ tài liệu"))
+            return display, gr.Dropdown(choices=file_names, value=None)
+        else:
+            gr.Error(result.get("message", "Lỗi khi xóa tài liệu"))
+            display, file_names = get_uploaded_files()
+            return display, gr.Dropdown(choices=file_names, value=None)
     except Exception as e:
         logger.error(f"Lỗi khi xóa tài liệu: {str(e)}")
         gr.Error(f"Lỗi: {str(e)}")
@@ -338,7 +126,7 @@ def clear_all_documents() -> Tuple[str, gr.Dropdown]:
 
 def chat_interface_fn(message, history, session_id: Optional[str] = None, selected_file: Optional[str] = None, chat_session_id: Optional[str] = None):
     """
-    Hàm xử lý chat cho Gradio ChatInterface
+    Hàm xử lý chat cho Gradio ChatInterface - gọi Django API
     
     Args:
         message: Câu hỏi
@@ -350,72 +138,16 @@ def chat_interface_fn(message, history, session_id: Optional[str] = None, select
     if not message.strip():
         return ""
     
-    # Session ID đã được xử lý ở wrapper, không cần tạo mới ở đây
-    # Chỉ cần đảm bảo chat_session_id được truyền vào đúng
-
+    result = api_chat_send(message, session_id, selected_file, chat_session_id)
     
-    natural_response = get_natural_response(message)
-    if natural_response:
-        if session_id and database:
-            user = auth_manager.get_user_from_session(session_id)
-            if user:
-                # Đảm bảo có chat_session_id trước khi lưu
-                if not chat_session_id:
-                    chat_session_id = database.create_chat_session(user["user_id"])
-                database.save_chat_message(user["user_id"], message, natural_response, selected_file, chat_session_id)
-                if chat_session_id:
-                    database.update_session(chat_session_id, title=message)
-        return natural_response
-    
-    stats = vector_store.get_stats()
-    if stats["total_chunks"] == 0:
-        return "⚠️ Chưa có tài liệu nào được upload. Vui lòng upload file PDF trước khi đặt câu hỏi."
-    
-    try:
-        logger.info(f"Đang tìm kiếm câu trả lời cho: {message} (file: {selected_file})")
+    if result.get("success"):
+        new_chat_session_id = result.get("chat_session_id")
+        if new_chat_session_id and new_chat_session_id != chat_session_id:
+            pass
         
-        search_results = vector_store.search(message, top_k=30, filename=selected_file)
-        
-        if not search_results:
-            response = "Không tìm thấy thông tin liên quan trong các tài liệu đã upload."
-            if selected_file:
-                response += f" (đã tìm trong file: {selected_file})"
-            
-            if session_id and database:
-                user = auth_manager.get_user_from_session(session_id)
-                if user:
-                    # Đảm bảo có chat_session_id trước khi lưu
-                    if not chat_session_id:
-                        chat_session_id = database.create_chat_session(user["user_id"])
-                    database.save_chat_message(user["user_id"], message, response, selected_file, chat_session_id)
-                    if chat_session_id:
-                        # Cập nhật tiêu đề session bằng câu hỏi mới nhất
-                        database.update_session(chat_session_id, title=message)
-            
-            return response
-        
-        expanded_results = vector_store.get_adjacent_chunks(search_results, page_range=2)
-        
-        reranked_results = reranker.rerank(message, expanded_results, top_k=15)
-        
-        answer = generate_answer(message, reranked_results, selected_file)
-        
-        if session_id and database:
-            user = auth_manager.get_user_from_session(session_id)
-            if user:
-                # Đảm bảo có chat_session_id trước khi lưu
-                if not chat_session_id:
-                    chat_session_id = database.create_chat_session(user["user_id"])
-                database.save_chat_message(user["user_id"], message, answer, selected_file, chat_session_id)
-                if chat_session_id:
-                    # Cập nhật tiêu đề session bằng câu hỏi mới nhất
-                    database.update_session(chat_session_id, title=message)
-        
-        return answer
-        
-    except Exception as e:
-        logger.error(f"Lỗi khi xử lý câu hỏi: {str(e)}")
-        return f"Lỗi: {str(e)}"
+        return result.get("response", "Không có phản hồi")
+    else:
+        return result.get("response", "Lỗi khi gửi tin nhắn")
 
 
 def create_chat_interface(session_id_state):
@@ -429,127 +161,181 @@ def create_chat_interface(session_id_state):
 
 def login_fn(email, password, session_state):
     """Xử lý đăng nhập với validation và toast thông báo chi tiết"""
-    if not auth_manager:
-        raise gr.Error("Hệ thống database chưa được khởi tạo. Vui lòng liên hệ quản trị viên.")
-    
     email = email.strip() if email else ""
     password = password.strip() if password else ""
     
     if not email:
-        raise gr.Error("Vui lòng nhập email của bạn")
+        gr.Error("Vui lòng nhập email của bạn")
+        return (
+            session_state,
+            gr.update(visible=True),    
+            gr.update(visible=True),   
+            gr.update(visible=False),  
+            gr.update(visible=False), 
+            gr.update(visible=True),   
+            gr.update(visible=False), 
+            gr.update(visible=False), 
+            gr.update(visible=False)   
+        )
     
     if "@" not in email or "." not in email.split("@")[-1]:
-        raise gr.Error("Email không hợp lệ. Vui lòng nhập đúng định dạng email (ví dụ: user@example.com)")
+        gr.Error("Email không hợp lệ. Vui lòng nhập đúng định dạng email (ví dụ: user@example.com)")
+        return (
+            session_state,
+            gr.update(visible=True),
+            gr.update(visible=True),
+            gr.update(visible=False),
+            gr.update(visible=False),
+            gr.update(visible=True),
+            gr.update(visible=False),
+            gr.update(visible=False),
+            gr.update(visible=False)
+        )
     
     if not password:
-        raise gr.Error("Vui lòng nhập mật khẩu của bạn")
+        gr.Error("Vui lòng nhập mật khẩu của bạn")
+        return (
+            session_state,
+            gr.update(visible=True),
+            gr.update(visible=True),
+            gr.update(visible=False),
+            gr.update(visible=False),
+            gr.update(visible=True),
+            gr.update(visible=False),
+            gr.update(visible=False),
+            gr.update(visible=False)
+        )
     
     if len(password) < 6:
-        raise gr.Error("Mật khẩu phải có ít nhất 6 ký tự")
+        gr.Error("Mật khẩu phải có ít nhất 6 ký tự")
+        return (
+            session_state,
+            gr.update(visible=True),
+            gr.update(visible=True),
+            gr.update(visible=False),
+            gr.update(visible=False),
+            gr.update(visible=True),
+            gr.update(visible=False),
+            gr.update(visible=False),
+            gr.update(visible=False)
+        )
     
-    result = auth_manager.login(email, password)
-    if result["success"]:
-        if not isinstance(session_state, dict):
-            session_state = {}
-        session_state["value"] = result["session_id"]
-        session_state["user"] = result["user"]
-        session_state["selected_file"] = session_state.get("selected_file")
-        
-        if database:
-            chat_session_id = database.create_chat_session(result["user"]["user_id"])
-            session_state["chat_session_id"] = chat_session_id
-        
-        user_info = f"""
-        <div style="
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            padding: 15px 20px;
-            border-radius: 10px;
-            color: white;
-        ">
-            <div style="display: flex; flex-direction: column; align-items: center; gap: 10px;">
-                    <div style="font-size: 16px; font-weight: 600; margin-bottom: 5px;">
-                       👋 Xin chào, <span style="color: #ffd700;">{result['user']['username']}</span>
-                    </div>
-                    <div style="font-size: 13px; opacity: 0.9;">
-                        Email: {result['user']['email']}
-                    </div>
+    try:
+        result = api_login(email, password)
+        if result.get("success"):
+            if not isinstance(session_state, dict):
+                session_state = {}
+            session_state["value"] = result["session_id"]
+            session_state["user"] = result["user"]
+            session_state["selected_file"] = session_state.get("selected_file")
+            session_state["chat_session_id"] = result.get("chat_session_id")
+            
+            access_token = result.get("access_token", result["session_id"])
+            user_info_json = json.dumps(result['user'])
+            
+            user_info = f"""
+            <div style="
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                padding: 15px 20px;
+                border-radius: 10px;
+                color: white;
+            ">
+                <div style="display: flex; flex-direction: column; align-items: center; gap: 10px;">
+                        <div style="font-size: 16px; font-weight: 600; margin-bottom: 5px;">
+                           👋 Xin chào, <span style="color: #ffd700;">{result['user']['username']}</span>
+                        </div>
+                        <div style="font-size: 13px; opacity: 0.9;">
+                            Email: {result['user']['email']}
+                        </div>
+                        <div style="font-size: 12px; opacity: 0.8; margin-top: 10px; padding: 8px; background: rgba(0,0,0,0.2); border-radius: 5px; word-break: break-all;">
+                            <strong>Access Token:</strong><br/>
+                            <code style="font-size: 10px;">{access_token}</code>
+                        </div>
+                </div>
             </div>
-        </div>
-        <script>
-            if (window.saveSessionToStorage) {{
-                window.saveSessionToStorage('{result["session_id"]}');
-            }}
-        </script>
-        """
-        
-        gr.Success("✅ " + result['message'])
+            <script>
+                if (window.saveSessionToStorage) {{
+                    window.saveSessionToStorage('{result["session_id"]}', '{access_token}', {user_info_json});
+                }}
+            </script>
+            """
+            
+            gr.Success("✅ " + result.get('message', 'Đăng nhập thành công!'))
+            
+            return (
+                session_state,
+                gr.update(visible=False),  
+                gr.update(visible=False),  
+                gr.update(value=user_info, visible=True),  
+                gr.update(visible=True),      
+                gr.update(visible=False),  
+                gr.update(visible=False),  
+                gr.update(visible=False),  
+                gr.update(visible=False)  
+            )
+        else:
+            error_message = result.get('message', 'Đăng nhập thất bại')
+            gr.Error(error_message)
+            
+            return (
+                session_state,
+                gr.update(visible=True),
+                gr.update(visible=True),
+                gr.update(visible=False),
+                gr.update(visible=False),
+                gr.update(visible=True),
+                gr.update(visible=False),
+                gr.update(visible=False),
+                gr.update(visible=False)
+            )
+    except Exception as e:
+        error_message = f"Lỗi kết nối: {str(e)}"
+        gr.Error(error_message)
         
         return (
             session_state,
-            gr.update(visible=False),  # Ẩn login_header_btn
-            gr.update(visible=False),  # Ẩn register_header_btn
-            gr.update(value=user_info, visible=True),  # Hiện thông tin user
-            gr.update(visible=True),    # Hiện logout button
-            gr.update(visible=False),   # Ẩn login_form
-            gr.update(visible=False),   # Ẩn register_form
-            gr.update(visible=False),   # Ẩn forgot_form
-            gr.update(visible=False)    # Ẩn reset_form
+            gr.update(visible=True),   
+            gr.update(visible=True),
+            gr.update(visible=False),
+            gr.update(visible=False),
+            gr.update(visible=True),
+            gr.update(visible=False),
+            gr.update(visible=False),
+            gr.update(visible=False)
         )
-    else:
-        # Hiển thị toast lỗi cụ thể dựa trên message từ auth_manager
-        error_message = result['message']
-        raise gr.Error(error_message)
 
 
 
 def register_fn(username, email, password, confirm_password, session_state):
     """Xử lý đăng ký và tự động đăng nhập"""
-    if not auth_manager:
-        gr.Error("Hệ thống database chưa được khởi tạo")
-        return (
-            session_state,
-            gr.update(visible=True),   # login_header_btn
-            gr.update(visible=True),   # register_header_btn
-            gr.update(visible=False),  # login_status
-            gr.update(visible=False),  # logout_btn
-            gr.update(visible=True),   # Giữ register_form hiển thị
-            gr.update(visible=False),  # login_form
-            gr.update(visible=False),  # forgot_form
-            gr.update(visible=False)   # reset_form
-        )
-    
     if password != confirm_password:
         gr.Error("Mật khẩu xác nhận không khớp")
         return (
             session_state,
-            gr.update(visible=True),   # login_header_btn
-            gr.update(visible=True),   # register_header_btn
-            gr.update(visible=False),  # login_status
-            gr.update(visible=False),  # logout_btn
-            gr.update(visible=True),   # Giữ register_form hiển thị
-            gr.update(visible=False),  # login_form
-            gr.update(visible=False),  # forgot_form
-            gr.update(visible=False)   # reset_form
+            gr.update(visible=True),  
+            gr.update(visible=True),  
+            gr.update(visible=False),  
+            gr.update(visible=False),  
+            gr.update(visible=True),  
+            gr.update(visible=False),  
+            gr.update(visible=False),  
         )
     
-    result = auth_manager.register(username, email, password)
+    result = api_register(username, email, password, confirm_password)
     if result["success"]:
-        gr.Success(result['message'] + " Đang tự động đăng nhập...")
+        gr.Success(result.get('message', 'Đăng ký thành công!') + " Đang tự động đăng nhập...")
         
-        # Tự động đăng nhập sau khi đăng ký
-        login_result = auth_manager.login(email, password)
-        if login_result["success"]:
-            # Tạo dict để lưu state
+        login_result = result
+        if login_result.get("success") and "user" in login_result:
             if not isinstance(session_state, dict):
                 session_state = {}
             session_state["value"] = login_result["session_id"]
             session_state["user"] = login_result["user"]
             session_state["selected_file"] = None
+            session_state["chat_session_id"] = login_result.get("chat_session_id")
             
-            # Tạo chat session mới
-            if database:
-                chat_session_id = database.create_chat_session(login_result["user"]["user_id"])
-                session_state["chat_session_id"] = chat_session_id
+            access_token = login_result.get("access_token", login_result["session_id"])
+            user_info_json = json.dumps(login_result['user'])
             
             user_info = f"""
             <div style="
@@ -565,58 +351,54 @@ def register_fn(username, email, password, confirm_password, session_state):
                         <div style="font-size: 13px; opacity: 0.9;">
                             Email: {login_result['user']['email']}
                         </div>
+                        <div style="font-size: 12px; opacity: 0.8; margin-top: 10px; padding: 8px; background: rgba(0,0,0,0.2); border-radius: 5px; word-break: break-all;">
+                            <strong>Access Token:</strong><br/>
+                            <code style="font-size: 10px;">{access_token}</code>
+                        </div>
                 </div>
             </div>
             <script>
                 if (window.saveSessionToStorage) {{
-                    window.saveSessionToStorage('{login_result["session_id"]}');
+                    window.saveSessionToStorage('{login_result["session_id"]}', '{access_token}', {user_info_json});
                 }}
             </script>
             """
             
             return (
                 session_state,
-                gr.update(visible=False),  # Ẩn login_header_btn
-                gr.update(visible=False),  # Ẩn register_header_btn
-                gr.update(value=user_info, visible=True),  # Hiện thông tin user
-                gr.update(visible=True),   # Hiện logout button
-                gr.update(visible=False),  # Ẩn register_form
-                gr.update(visible=False),  # Ẩn login_form
-                gr.update(visible=False),  # Ẩn forgot_form
-                gr.update(visible=False)   # Ẩn reset_form
+                gr.update(visible=False),  
+                gr.update(visible=False),  
+                gr.update(value=user_info, visible=True),  
+                gr.update(visible=True),  
+                gr.update(visible=False),  
+                gr.update(visible=False),  
             )
         else:
-            # Đăng ký thành công nhưng đăng nhập thất bại (hiếm khi xảy ra)
             return (
                 session_state,
-                gr.update(visible=True),   # login_header_btn
-                gr.update(visible=True),   # register_header_btn
-                gr.update(visible=False),  # login_status
-                gr.update(visible=False),  # logout_btn
-                gr.update(visible=False),  # Ẩn register_form
-                gr.update(visible=True),   # Hiện login_form để đăng nhập
-                gr.update(visible=False),  # forgot_form
-                gr.update(visible=False)   # reset_form
+                gr.update(visible=True),    
+                gr.update(visible=True),    
+                gr.update(visible=False),  
+                gr.update(visible=False),  
             )
     else:
         gr.Error(result['message'])
         return (
             session_state,
-            gr.update(visible=True),   # login_header_btn
-            gr.update(visible=True),   # register_header_btn
-            gr.update(visible=False),  # login_status
-            gr.update(visible=False),  # logout_btn
-            gr.update(visible=True),   # Giữ register_form hiển thị
-            gr.update(visible=False),  # login_form
-            gr.update(visible=False),  # forgot_form
-            gr.update(visible=False)   # reset_form
+            gr.update(visible=True),  
+            gr.update(visible=True),  
+            gr.update(visible=False),  
+            gr.update(visible=False),  
+            gr.update(visible=True),  
+            gr.update(visible=False),  
+            gr.update(visible=False),  
         )
 
 
 def logout_fn(session_state):
     """Xử lý đăng xuất"""
     if isinstance(session_state, dict) and session_state.get("value"):
-        auth_manager.logout(session_state["value"])
+        api_logout(session_state["value"])
         session_state["value"] = None
         session_state["user"] = None
         session_state["selected_file"] = None
@@ -631,24 +413,17 @@ def logout_fn(session_state):
     gr.Success("Đã đăng xuất")
     return (
         session_state,
-        gr.update(visible=True),   # Hiện login_header_btn
-        gr.update(visible=True),   # Hiện register_header_btn
-        gr.update(value=logout_html, visible=False),  # Ẩn thông tin user và clear localStorage
-        gr.update(visible=False),  # Ẩn logout button
-        gr.update(visible=False),  # Ẩn login_form
-        gr.update(visible=False),  # Ẩn register_form
-        gr.update(visible=False),  # Ẩn forgot_form
-        gr.update(visible=False)   # Ẩn reset_form
+        gr.update(visible=True),  
+        gr.update(visible=True),  
+        gr.update(value=logout_html, visible=False),  
+        gr.update(visible=False),  
+        gr.update(visible=False),  
     )
 
 
 def forgot_password_fn(email):
     """Xử lý quên mật khẩu"""
-    if not auth_manager:
-        gr.Error("Hệ thống database chưa được khởi tạo")
-        return
-    
-    result = auth_manager.request_password_reset(email)
+    result = api_forgot_password(email)
     if "✅" in result["message"] or "thành công" in result["message"].lower():
         gr.Success(result["message"])
     elif "❌" in result["message"] or "lỗi" in result["message"].lower():
@@ -659,15 +434,11 @@ def forgot_password_fn(email):
 
 def reset_password_fn(token, new_password, confirm_password):
     """Xử lý reset mật khẩu"""
-    if not auth_manager:
-        gr.Error("Hệ thống database chưa được khởi tạo")
-        return
-    
     if new_password != confirm_password:
         gr.Error("Mật khẩu xác nhận không khớp")
         return
     
-    result = auth_manager.reset_password(token, new_password)
+    result = api_reset_password(token, new_password, confirm_password)
     if result["success"]:
         gr.Success(result['message'])
     else:
@@ -676,11 +447,9 @@ def reset_password_fn(token, new_password, confirm_password):
 
 def select_file_fn(filename, session_state):
     """Chọn file để hỏi"""
-    # Đảm bảo session_state là dict
     if not isinstance(session_state, dict):
         session_state = {"value": None, "selected_file": None, "user": None}
     
-    # Lưu file được chọn (loại bỏ empty string)
     selected = filename if filename and filename.strip() else None
     session_state["selected_file"] = selected
     
@@ -688,64 +457,69 @@ def select_file_fn(filename, session_state):
     return msg, session_state
 
 
-def restore_session_from_id(stored_session_id, session_state):
+def restore_session_from_id(stored_session_id, session_state, is_restoring):
     """Restore session từ session_id đã lưu trong localStorage"""
-    if not stored_session_id or not auth_manager:
+    if not stored_session_id or not stored_session_id.strip():
         return (
             session_state,
-            gr.update(visible=True),   # Hiện login_header_btn
-            gr.update(visible=True),   # Hiện register_header_btn
-            gr.update(visible=False),  # Ẩn thông tin user
-            gr.update(visible=False)   # Ẩn logout button
+            gr.update(visible=False),  
+            gr.update(visible=True),   
+            gr.update(visible=True),   
+            gr.update(visible=False),  
+            gr.update(visible=False)   
         )
     
-    # Kiểm tra session có hợp lệ không
-    user = auth_manager.get_user_from_session(stored_session_id)
-    if user:
-        # Session hợp lệ, restore state
-        if not isinstance(session_state, dict):
-            session_state = {}
-        session_state["value"] = stored_session_id
-        session_state["user"] = user
-        session_state["selected_file"] = None
-        
-        # Tạo chat session mới
-        if database:
-            chat_session_id = database.create_chat_session(user["user_id"])
-            session_state["chat_session_id"] = chat_session_id
-        
-        user_info = f"""
-        <div style="
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            padding: 15px 20px;
-            border-radius: 10px;
-            color: white;
-        ">
-            <div style="display: flex; flex-direction: column; align-items: center; gap: 10px;">
-                    <div style="font-size: 16px; font-weight: 600; margin-bottom: 5px;">
-                       👋 Xin chào, <span style="color: #ffd700;">{user['username']}</span>
+    try:
+        result = api_verify_session(stored_session_id)
+        if result.get("success") and result.get("valid"):
+            user = result.get("user")
+            if user:
+                if not isinstance(session_state, dict):
+                    session_state = {}
+                session_state["value"] = stored_session_id
+                session_state["user"] = user
+                session_state["selected_file"] = None
+                session_state["chat_session_id"] = result.get("chat_session_id")
+                access_token = stored_session_id
+                
+                user_info_json = json.dumps(user)
+                
+                user_info = f"""
+                <div style="
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    padding: 15px 20px;
+                    border-radius: 10px;
+                    color: white;
+                ">
+                    <div style="display: flex; flex-direction: column; align-items: center; gap: 10px;">
+                            <div style="font-size: 16px; font-weight: 600; margin-bottom: 5px;">
+                               👋 Xin chào, <span style="color: #ffd700;">{user['username']}</span>
+                            </div>
+                            <div style="font-size: 13px; opacity: 0.9;">
+                                Email: {user['email']}
+                            </div>
+                            <div style="font-size: 12px; opacity: 0.8; margin-top: 10px; padding: 8px; background: rgba(0,0,0,0.2); border-radius: 5px; word-break: break-all;">
+                                <strong>Access Token:</strong><br/>
+                                <code style="font-size: 10px;">{access_token}</code>
+                            </div>
                     </div>
-                    <div style="font-size: 13px; opacity: 0.9;">
-                        Email: {user['email']}
-                    </div>
-            </div>
-        </div>
-        <script>
-            if (window.saveSessionToStorage) {{
-                window.saveSessionToStorage('{stored_session_id}');
-            }}
-        </script>
-        """
+                </div>
+                <script>
+                    if (window.saveSessionToStorage) {{
+                        window.saveSessionToStorage('{stored_session_id}', '{access_token}', {user_info_json});
+                    }}
+                </script>
+                """
+                
+                return (
+                    session_state,
+                    gr.update(visible=False),
+                    gr.update(visible=False),  
+                    gr.update(visible=False),  
+                    gr.update(value=user_info, visible=True),  
+                    gr.update(visible=True)   
+                )
         
-        return (
-            session_state,
-            gr.update(visible=False),  # Ẩn login_header_btn
-            gr.update(visible=False),  # Ẩn register_header_btn
-            gr.update(value=user_info, visible=True),  # Hiện thông tin user
-            gr.update(visible=True)    # Hiện logout button
-        )
-    else:
-        # Session không hợp lệ, xóa localStorage
         clear_html = """
         <script>
             window.clearSessionFromStorage();
@@ -753,71 +527,220 @@ def restore_session_from_id(stored_session_id, session_state):
         """
         return (
             session_state,
-            gr.update(visible=True),   # Hiện login_header_btn
-            gr.update(visible=True),   # Hiện register_header_btn
-            gr.update(value=clear_html, visible=False),  # Ẩn thông tin user
-            gr.update(visible=False)   # Ẩn logout button
+            gr.update(visible=False),
+            gr.update(visible=True),  
+            gr.update(visible=True),  
+            gr.update(value=clear_html, visible=False),  
+            gr.update(visible=False)  
+        )
+    except Exception as e:
+        logger.error(f"Lỗi khi restore session: {str(e)}")
+        clear_html = """
+        <script>
+            window.clearSessionFromStorage();
+        </script>
+        """
+        return (
+            session_state,
+            gr.update(visible=False),  
+            gr.update(visible=True),  
+            gr.update(visible=True),  
+            gr.update(value=clear_html, visible=False),  
+            gr.update(visible=False)  
         )
 
 
 def create_new_chat_session(session_state):
-    """Tạo chat session mới"""
+    """Tạo chat session mới - gọi Django API"""
     if not isinstance(session_state, dict) or not session_state.get("value"):
         gr.Warning("Vui lòng đăng nhập để sử dụng tính năng này")
         return session_state, None
     
-    user = auth_manager.get_user_from_session(session_state["value"])
-    if not user or not database:
-        gr.Warning("Không thể tạo session mới")
-        return session_state, None
+    session_id = session_state["value"]
+    result = api_create_chat_session(session_id)
     
-    # Tạo session mới
-    chat_session_id = database.create_chat_session(user["user_id"])
-    if chat_session_id:
-        session_state["chat_session_id"] = chat_session_id
-        gr.Success("Đã tạo cuộc trò chuyện mới!")
-        return session_state, []  # Clear chat history
+    if result.get("success"):
+        chat_session_id = result.get("chat_session_id")
+        if chat_session_id:
+            session_state["chat_session_id"] = chat_session_id
+            gr.Success(result.get("message", "Đã tạo cuộc trò chuyện mới!"))
+            return session_state, []  # Clear chat history
+        else:
+            gr.Error("Không thể tạo cuộc trò chuyện mới")
+            return session_state, None
     else:
-        gr.Error("Không thể tạo cuộc trò chuyện mới")
+        gr.Error(result.get("message", "Không thể tạo cuộc trò chuyện mới"))
         return session_state, None
 
 
 def get_chat_sessions_list(session_state):
-    """Lấy danh sách chat sessions kèm thời gian & câu hỏi gần nhất"""
+    """Lấy danh sách chat sessions - gọi Django API với button Load Chat"""
     if not isinstance(session_state, dict) or not session_state.get("value"):
         return "Vui lòng đăng nhập để xem lịch sử chat"
     
-    user = auth_manager.get_user_from_session(session_state["value"])
-    if not user or not database:
-        return "Không thể lấy danh sách chat"
+    session_id = session_state["value"]
+    result = api_get_chat_sessions(session_id)
     
-    sessions = database.get_chat_sessions(user["user_id"])
+    if not result.get("success"):
+        return result.get("message", "Không thể lấy danh sách chat")
+    
+    sessions = result.get("sessions", [])
     if not sessions:
         return "Chưa có cuộc trò chuyện nào"
     
-    def _shorten(text, limit=90):
-        text = (text or "").strip()
-        if len(text) <= limit:
-            return text
-        return text[:limit - 3] + "..."
-    
-    from datetime import datetime, timedelta
-    
-    session_lines = []
-    for session in sessions:
-        # Convert UTC to UTC+7 (Vietnam Time)
-        utc_time = datetime.fromisoformat(session["updated_at"].replace("Z", "+00:00"))
-        vn_time = utc_time + timedelta(hours=7)
-        updated_time = vn_time.strftime("%d/%m/%Y %H:%M")
+    # Tạo HTML với button Load Chat cho mỗi session
+    html_parts = []
+    for idx, session in enumerate(sessions):
+        chat_session_id = session.get("session_id", "")
+        updated_time = session.get("updated_at", "")
+        last_question = session.get("last_question", "Chưa có câu hỏi nào")
         
-        last_message = database.get_last_message_of_session(session["session_id"])
-        last_question = last_message["message"] if last_message and last_message.get("message") else "Chưa có câu hỏi nào"
-        short_question = _shorten(last_question)
-        session_lines.append(f"- [{updated_time}] {short_question}")
+        # Truncate last_question nếu quá dài
+        display_question = last_question[:50] + "..." if len(last_question) > 50 else last_question
+        
+        html_parts.append(f"""
+        <div class="chat-session-item" style="
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px;
+            margin: 8px 0;
+            background: var(--background-fill-secondary);
+            border-radius: 8px;
+            border: 1px solid var(--border-color-primary);
+        ">
+            <div style="flex: 1;">
+                <div style="font-weight: 500; margin-bottom: 4px;">{display_question}</div>
+                <div style="font-size: 12px; color: var(--body-text-color-subdued);">{updated_time}</div>
+            </div>
+            <button 
+                class="load-chat-btn" 
+                data-session-id="{chat_session_id}"
+                style="
+                    padding: 8px 16px;
+                    background: var(--primary-500);
+                    color: white;
+                    border: none;
+                    border-radius: 6px;
+                    cursor: pointer;
+                    font-size: 14px;
+                    font-weight: 500;
+                    transition: background 0.2s;
+                "
+                onmouseover="this.style.background='var(--primary-600)'"
+                onmouseout="this.style.background='var(--primary-500)'"
+            >
+                📥 Load Chat
+            </button>
+        </div>
+        """)
     
-    result = "\n".join(session_lines)
-    print(f"Chat history response:\n{result}")
-    return result
+    html_content = f"""
+    <div class="chat-sessions-list">
+        {''.join(html_parts)}
+    </div>
+    <script>
+        (function() {{
+            // Handle click on Load Chat buttons
+            function handleLoadChatClick(e) {{
+                const btn = e.target.classList.contains('load-chat-btn') 
+                    ? e.target 
+                    : e.target.closest('.load-chat-btn');
+                
+                if (!btn) return;
+                
+                const sessionId = btn.getAttribute('data-session-id');
+                if (!sessionId) return;
+                
+                // Tìm input với nhiều cách
+                let loadChatInput = document.querySelector('#load_chat_session_input textarea') || 
+                                 document.querySelector('#load_chat_session_input input') ||
+                                 document.querySelector('textarea#load_chat_session_input') ||
+                                 document.querySelector('input#load_chat_session_input');
+                
+                if (!loadChatInput) {{
+                    // Thử tìm bằng data-testid
+                    const allInputs = document.querySelectorAll('textarea[data-testid="textbox"], input[data-testid="textbox"]');
+                    for (const input of allInputs) {{
+                        if (input.closest('#load_chat_session_input')) {{
+                            loadChatInput = input;
+                            break;
+                        }}
+                    }}
+                }}
+                
+                if (loadChatInput) {{
+                    loadChatInput.value = sessionId;
+                    // Trigger events
+                    loadChatInput.dispatchEvent(new Event('input', {{ bubbles: true, cancelable: true }}));
+                    loadChatInput.dispatchEvent(new Event('change', {{ bubbles: true, cancelable: true }}));
+                    
+                    // Thử dùng native setter
+                    try {{
+                        const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+                            window.HTMLTextAreaElement?.prototype || window.HTMLInputElement?.prototype, 
+                            "value"
+                        )?.set;
+                        if (nativeInputValueSetter) {{
+                            nativeInputValueSetter.call(loadChatInput, sessionId);
+                            loadChatInput.dispatchEvent(new Event('input', {{ bubbles: true, cancelable: true }}));
+                        }}
+                    }} catch (e) {{
+                        console.log('Không thể dùng native setter:', e);
+                    }}
+                }} else {{
+                    console.warn('Không tìm thấy load_chat_session_input');
+                }}
+            }}
+            
+            // Attach event listener
+            document.addEventListener('click', handleLoadChatClick);
+        }})();
+    </script>
+    """
+    
+    return html_content
+
+
+def load_chat_session(chat_session_id, session_state):
+    """Load chat history từ một chat session và trả về history cho ChatInterface"""
+    if not chat_session_id or not chat_session_id.strip():
+        return session_state, None, gr.update(value="")
+    
+    if not isinstance(session_state, dict) or not session_state.get("value"):
+        gr.Warning("Vui lòng đăng nhập để load chat")
+        return session_state, None, gr.update(value="")
+    
+    session_id = session_state["value"]
+    
+    # Gọi API để lấy chat history
+    result = api_get_chat_history(chat_session_id, session_id)
+    
+    if not result.get("success"):
+        gr.Error(result.get("message", "Không thể load chat history"))
+        return session_state, None, gr.update(value="")
+    
+    messages = result.get("messages", [])
+    if not messages:
+        gr.Info("Chat session này chưa có tin nhắn nào")
+        # Vẫn cập nhật chat_session_id để tiếp tục chat trong session này
+        session_state["chat_session_id"] = chat_session_id
+        return session_state, [], gr.update(value="")
+    
+    # Chuyển đổi messages thành format của Gradio ChatInterface
+    # Format: [(user_message, bot_response), ...]
+    history = []
+    for msg in messages:
+        user_msg = msg.get("message", "")
+        bot_msg = msg.get("response", "")
+        if user_msg and bot_msg:
+            history.append((user_msg, bot_msg))
+    
+    # Cập nhật chat_session_id trong session_state
+    session_state["chat_session_id"] = chat_session_id
+    
+    gr.Success(f"Đã load {len(history)} tin nhắn từ chat session")
+    return session_state, history, gr.update(value="")
 
 
 def toggle_chat_history_panel(is_visible, session_state):
@@ -1035,19 +958,39 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Chatbot Hành Chính Việt Nam") 
             });
         });
     </script>
-    <script>
+        <script>
         // Lưu và load session từ localStorage
-        function saveSessionToStorage(sessionId) {
+        function saveSessionToStorage(sessionId, accessToken, userInfo) {
             if (sessionId) {
                 localStorage.setItem('ragviet_session_id', sessionId);
+                if (accessToken) {
+                    localStorage.setItem('ragviet_access_token', accessToken);
+                }
+                if (userInfo) {
+                    localStorage.setItem('ragviet_user_info', JSON.stringify(userInfo));
+                }
                 console.log('Đã lưu session:', sessionId);
+                console.log('Đã lưu access_token:', accessToken);
+                console.log('Đã lưu user_info:', userInfo);
             }
         }
         
         function loadSessionFromStorage() {
             const sessionId = localStorage.getItem('ragviet_session_id');
+            const accessToken = localStorage.getItem('ragviet_access_token');
+            const userInfoStr = localStorage.getItem('ragviet_user_info');
+            
             if (sessionId) {
                 console.log('Đã load session:', sessionId);
+                console.log('Đã load access_token:', accessToken);
+                if (userInfoStr) {
+                    try {
+                        const userInfo = JSON.parse(userInfoStr);
+                        console.log('Đã load user_info:', userInfo);
+                    } catch (e) {
+                        console.error('Lỗi parse user_info:', e);
+                    }
+                }
                 return sessionId;
             }
             return null;
@@ -1055,65 +998,256 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Chatbot Hành Chính Việt Nam") 
         
         function clearSessionFromStorage() {
             localStorage.removeItem('ragviet_session_id');
-            console.log('Đã xóa session');
+            localStorage.removeItem('ragviet_access_token');
+            localStorage.removeItem('ragviet_user_info');
+            console.log('Đã xóa session và token');
+        }
+        
+        function getAccessToken() {
+            return localStorage.getItem('ragviet_access_token');
+        }
+        
+        function getUserInfo() {
+            const userInfoStr = localStorage.getItem('ragviet_user_info');
+            if (userInfoStr) {
+                try {
+                    return JSON.parse(userInfoStr);
+                } catch (e) {
+                    return null;
+                }
+            }
+            return null;
         }
         
         // Expose functions to window
         window.saveSessionToStorage = saveSessionToStorage;
         window.loadSessionFromStorage = loadSessionFromStorage;
         window.clearSessionFromStorage = clearSessionFromStorage;
+        window.getAccessToken = getAccessToken;
+        window.getUserInfo = getUserInfo;
         
-        // Auto-restore session khi load trang
-        function tryRestoreSession() {
+        // Auto-restore session khi load trang - hiển thị profile ngay từ localStorage
+        let restoreAttempts = 0;
+        const MAX_RESTORE_ATTEMPTS = 20;
+        let hasRestoredFromLocalStorage = false;
+        
+        // Hàm hiển thị profile từ localStorage ngay lập tức (không cần đợi API)
+        function showProfileFromLocalStorage() {
+            if (hasRestoredFromLocalStorage) return;
+            
             const savedSession = loadSessionFromStorage();
-            if (savedSession) {
-                console.log('Tìm thấy session đã lưu, đang restore...');
-                // Thử nhiều selector khác nhau
-                const selectors = [
-                    '#restore_session_input textarea',
-                    '#restore_session_input input',
-                    'textarea[data-testid="textbox"]',
-                    '.gr-textbox textarea'
-                ];
+            const userInfo = getUserInfo();
+            
+            if (savedSession && userInfo) {
+                hasRestoredFromLocalStorage = true;
+                console.log('✅ Hiển thị profile từ localStorage ngay lập tức:', userInfo);
                 
-                let restoreInput = null;
-                for (const selector of selectors) {
-                    const elements = document.querySelectorAll(selector);
-                    for (const elem of elements) {
-                        if (elem.closest('#restore_session_input') || elem.id === 'restore_session_input') {
-                            restoreInput = elem;
-                            break;
-                        }
-                    }
-                    if (restoreInput) break;
-                }
+                // Tạo HTML cho profile
+                const userInfoHtml = `
+                    <div style="
+                        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                        padding: 15px 20px;
+                        border-radius: 10px;
+                        color: white;
+                    ">
+                        <div style="display: flex; flex-direction: column; align-items: center; gap: 10px;">
+                            <div style="font-size: 16px; font-weight: 600; margin-bottom: 5px;">
+                               👋 Xin chào, <span style="color: #ffd700;">${userInfo.username || 'User'}</span>
+                            </div>
+                            <div style="font-size: 13px; opacity: 0.9;">
+                                Email: ${userInfo.email || ''}
+                            </div>
+                            <div style="font-size: 12px; opacity: 0.8; margin-top: 10px; padding: 8px; background: rgba(0,0,0,0.2); border-radius: 5px; word-break: break-all;">
+                                <strong>Access Token:</strong><br/>
+                                <code style="font-size: 10px;">${savedSession}</code>
+                            </div>
+                        </div>
+                    </div>
+                `;
                 
-                if (restoreInput) {
-                    console.log('Đã tìm thấy restore input, đang trigger...');
-                    // Set value directly
-                    restoreInput.value = savedSession;
-                    
-                    // Trigger events manually to ensure Gradio catches the change
-                    restoreInput.dispatchEvent(new Event('input', { bubbles: true }));
-                    restoreInput.dispatchEvent(new Event('change', { bubbles: true }));
-                    
-                    // Try to trigger React/Gradio internal state update if possible (hacky but sometimes needed)
-                    const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
-                    if (nativeInputValueSetter) {
-                        nativeInputValueSetter.call(restoreInput, savedSession);
-                        restoreInput.dispatchEvent(new Event('input', { bubbles: true }));
-                    }
-                } else {
-                    console.log('Chưa tìm thấy restore input, thử lại sau...');
+                // Tìm và cập nhật UI ngay lập tức
+                const loginStatus = document.querySelector('#login-status');
+                const loginHeaderBtn = document.querySelector('#header-login-btn');
+                const registerHeaderBtn = document.querySelector('#header-register-btn');
+                const logoutBtn = document.querySelector('#header-logout-btn');
+                const restoreLoading = document.querySelector('#restore-loading');
+                
+                if (loginStatus) {
+                    loginStatus.innerHTML = userInfoHtml;
+                    loginStatus.style.display = 'block';
                 }
+                if (loginHeaderBtn) loginHeaderBtn.style.display = 'none';
+                if (registerHeaderBtn) registerHeaderBtn.style.display = 'none';
+                if (logoutBtn) logoutBtn.style.display = 'block';
+                if (restoreLoading) restoreLoading.style.display = 'none';
             }
         }
         
-        // Thử restore nhiều lần với khoảng thời gian dài hơn
-        setTimeout(tryRestoreSession, 1000);
-        setTimeout(tryRestoreSession, 2000);
-        setTimeout(tryRestoreSession, 3000);
-        setTimeout(tryRestoreSession, 5000);
+        function tryRestoreSession() {
+            restoreAttempts++;
+            const savedSession = loadSessionFromStorage();
+            
+            if (!savedSession) {
+                if (restoreAttempts === 1) {
+                    console.log('Không tìm thấy session đã lưu');
+                    // Ẩn loading nếu không có session
+                    const restoreLoading = document.querySelector('#restore-loading');
+                    if (restoreLoading) restoreLoading.style.display = 'none';
+                }
+                return;
+            }
+            
+            // Hiển thị profile từ localStorage ngay lập tức
+            if (restoreAttempts === 1) {
+                showProfileFromLocalStorage();
+            }
+            
+            console.log(`[Attempt ${restoreAttempts}] Tìm thấy session đã lưu, đang verify với API...`, savedSession);
+            
+            // Tìm restore input với nhiều cách khác nhau
+            let restoreInput = null;
+            
+            // Cách 1: Tìm trực tiếp bằng ID
+            restoreInput = document.querySelector('#restore_session_input textarea') || 
+                         document.querySelector('#restore_session_input input') ||
+                         document.querySelector('textarea#restore_session_input') ||
+                         document.querySelector('input#restore_session_input');
+            
+            // Cách 2: Tìm bằng data-testid
+            if (!restoreInput) {
+                const allTextareas = document.querySelectorAll('textarea[data-testid="textbox"]');
+                for (const textarea of allTextareas) {
+                    if (textarea.closest('#restore_session_input')) {
+                        restoreInput = textarea;
+                        break;
+                    }
+                }
+            }
+            
+            // Cách 3: Tìm bằng class và parent
+            if (!restoreInput) {
+                const allInputs = document.querySelectorAll('.gr-textbox textarea, .gr-textbox input');
+                for (const input of allInputs) {
+                    if (input.closest('#restore_session_input')) {
+                        restoreInput = input;
+                        break;
+                    }
+                }
+            }
+            
+            if (restoreInput) {
+                console.log('✅ Đã tìm thấy restore input, đang set value...');
+                
+                // Set value với nhiều cách để đảm bảo Gradio nhận được
+                restoreInput.value = savedSession;
+                
+                // Trigger nhiều loại events
+                const events = ['input', 'change', 'keyup', 'keydown', 'paste'];
+                events.forEach(eventType => {
+                    restoreInput.dispatchEvent(new Event(eventType, { bubbles: true, cancelable: true }));
+                });
+                
+                // Thử dùng native setter
+                try {
+                    const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+                        window.HTMLTextAreaElement?.prototype || window.HTMLInputElement?.prototype, 
+                        "value"
+                    )?.set;
+                    if (nativeInputValueSetter) {
+                        nativeInputValueSetter.call(restoreInput, savedSession);
+                        restoreInput.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+                    }
+                } catch (e) {
+                    console.log('Không thể dùng native setter:', e);
+                }
+                
+                // Focus và blur để trigger
+                restoreInput.focus();
+                setTimeout(() => {
+                    restoreInput.blur();
+                    console.log('✅ Đã trigger restore với value:', savedSession);
+                }, 100);
+                
+                return true; // Thành công
+            } else {
+                if (restoreAttempts < MAX_RESTORE_ATTEMPTS) {
+                    console.log(`[Attempt ${restoreAttempts}] Chưa tìm thấy restore input, thử lại sau...`);
+                } else {
+                    console.warn('⚠️ Đã thử restore quá nhiều lần mà không tìm thấy input');
+                }
+                return false; // Chưa thành công
+            }
+        }
+        
+        // Hiển thị loading và profile từ localStorage ngay lập tức
+        function initRestore() {
+            const savedSession = loadSessionFromStorage();
+            if (savedSession) {
+                // Hiển thị loading
+                const restoreLoading = document.querySelector('#restore-loading');
+                if (restoreLoading) {
+                    restoreLoading.style.display = 'block';
+                }
+                
+                // Hiển thị profile từ localStorage ngay
+                showProfileFromLocalStorage();
+            }
+        }
+        
+        // Thử restore ngay khi DOM ready
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', () => {
+                initRestore();
+                setTimeout(tryRestoreSession, 100);
+            });
+        } else {
+            initRestore();
+            setTimeout(tryRestoreSession, 100);
+        }
+        
+        // Thử restore nhiều lần với interval
+        const restoreInterval = setInterval(() => {
+            if (tryRestoreSession() || restoreAttempts >= MAX_RESTORE_ATTEMPTS) {
+                clearInterval(restoreInterval);
+            }
+        }, 500);
+        
+        // Cleanup sau 10 giây
+        setTimeout(() => {
+            clearInterval(restoreInterval);
+        }, 10000);
+        
+        // Thử restore khi Gradio app đã load xong
+        // Sử dụng window.addEventListener để lắng nghe khi Gradio ready
+        window.addEventListener('load', () => {
+            setTimeout(tryRestoreSession, 500);
+        });
+        
+        // Nếu có Gradio API, sử dụng nó
+        if (window.gradio_config) {
+            setTimeout(tryRestoreSession, 1000);
+        }
+        
+        // Sử dụng MutationObserver để theo dõi khi restore input được thêm vào DOM
+        const restoreObserver = new MutationObserver(function(mutations) {
+            const savedSession = loadSessionFromStorage();
+            if (savedSession && restoreAttempts < MAX_RESTORE_ATTEMPTS) {
+                const restoreInput = document.querySelector('#restore_session_input textarea, #restore_session_input input');
+                if (restoreInput && restoreInput.value !== savedSession) {
+                    console.log('🔍 MutationObserver: Phát hiện restore input mới, đang set value...');
+                    restoreInput.value = savedSession;
+                    restoreInput.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+                    restoreInput.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+                    restoreAttempts = MAX_RESTORE_ATTEMPTS; // Đánh dấu đã thử
+                }
+            }
+        });
+        
+        // Bắt đầu observe
+        restoreObserver.observe(document.body, {
+            childList: true,
+            subtree: true
+        });
     </script>
     </style>
     """)
@@ -1125,6 +1259,7 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Chatbot Hành Chính Việt Nam") 
     
     session_state = gr.State(value={"value": None, "user": None, "selected_file": None, "chat_session_id": None})
     chat_history_visible = gr.State(False)
+    is_restoring_session = gr.State(False)  # State để track đang restore
     
     restore_session_input = gr.Textbox(
         visible=True,
@@ -1153,7 +1288,8 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Chatbot Hành Chính Việt Nam") 
             border-radius: 8px;
             background: var(--background-fill-secondary);
         }
-        #restore_session_input {
+        #restore_session_input,
+        #load_chat_session_input {
             position: absolute !important;
             left: -9999px !important;
             opacity: 0 !important;
@@ -1162,12 +1298,39 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Chatbot Hành Chính Việt Nam") 
             width: 1px !important;
             overflow: hidden !important;
         }
+        /* Loading spinner */
+        .spinner {
+            border: 3px solid rgba(0, 0, 0, 0.1);
+            border-radius: 50%;
+            border-top: 3px solid var(--primary-500, #0066cc);
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        #restore-loading {
+            padding: 15px;
+            text-align: center;
+            background: var(--background-fill-secondary);
+            border-radius: 8px;
+            margin-bottom: 10px;
+        }
     </style>
     """)
     
     with gr.Row(elem_id="header-tabs-row"):
         with gr.Column(scale=0, min_width=300, elem_classes="auth-section"):
             auth_text = gr.Markdown("**Tài khoản:**", elem_id="auth-text", visible=False)
+            # Loading indicator khi đang restore
+            restore_loading = gr.Markdown(
+                visible=False,
+                elem_id="restore-loading",
+                value="<div style='text-align: center; padding: 10px;'><div class='spinner'></div><br/>Đang khôi phục phiên đăng nhập...</div>"
+            )
             with gr.Row():
                 login_header_btn = gr.Button("Đăng nhập", variant="secondary", size="sm", elem_id="header-login-btn")
                 register_header_btn = gr.Button("Đăng ký", variant="secondary", size="sm", elem_id="header-register-btn")
@@ -1255,11 +1418,11 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Chatbot Hành Chính Việt Nam") 
                         selected_file = session_state_val.get("selected_file")
                         chat_session_id = session_state_val.get("chat_session_id")
                     
-                    # Nếu user đã đăng nhập nhưng chưa có chat_session_id, tạo session mới
-                    if session_id and database and not chat_session_id:
-                        user = auth_manager.get_user_from_session(session_id)
-                        if user:
-                            chat_session_id = database.create_chat_session(user["user_id"])
+                    # Nếu user đã đăng nhập nhưng chưa có chat_session_id, tạo session mới qua API
+                    if session_id and not chat_session_id:
+                        create_result = api_create_chat_session(session_id)
+                        if create_result.get("success"):
+                            chat_session_id = create_result.get("chat_session_id")
                             # Cập nhật session_state ngay lập tức (lưu ý: cái này chỉ update local dict, 
                             # không update lại state của Gradio trừ khi return, nhưng ChatInterface không support return state)
                             if isinstance(session_state_val, dict):
@@ -1280,6 +1443,17 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Chatbot Hành Chính Việt Nam") 
                         ["Thời hạn xử lý hồ sơ là bao lâu?", None]
                     ],
                     cache_examples=False
+                )
+                
+                # Hidden input để trigger load chat từ button
+                load_chat_session_input = gr.Textbox(
+                    visible=False,
+                    show_label=False,
+                    elem_id="load_chat_session_input",
+                    interactive=False,
+                    container=False,
+                    lines=1,
+                    placeholder=""
                 )
                 
                 chat_history_btn = gr.Button("📜 Lịch sử chat", variant="secondary", elem_id="chat-history-btn")
@@ -1328,6 +1502,13 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Chatbot Hành Chính Việt Nam") 
                     inputs=[session_state],
                     outputs=[sessions_display]
                 )
+                
+                # Handle load chat session
+                load_chat_session_input.change(
+                    load_chat_session,
+                    inputs=[load_chat_session_input, session_state],
+                    outputs=[session_state, chat_interface.chatbot, load_chat_session_input]
+                )
             
             with gr.Tab("📁 Quản Lý Tài Liệu"):
                 # Kiểm tra đăng nhập để hiển thị upload
@@ -1363,10 +1544,7 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Chatbot Hành Chính Việt Nam") 
                 
                 def check_auth_and_upload(files, session_state):
                     """Kiểm tra đăng nhập trước khi upload"""
-                    if not isinstance(session_state, dict) or not session_state.get("value"):
-                        gr.Error("Vui lòng đăng nhập để upload file. Người dùng chưa đăng nhập chỉ có thể sử dụng các file cố định.")
-                        return
-                    process_pdfs(files)
+                    process_pdfs(files, session_state)
                 
                 upload_btn.click(
                     check_auth_and_upload,
@@ -1463,34 +1641,34 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Chatbot Hành Chính Việt Nam") 
     # Functions to switch forms
     def show_login():
         return (
-            gr.update(visible=True),   # login_form
-            gr.update(visible=False),  # register_form
-            gr.update(visible=False),  # forgot_form
-            gr.update(visible=False)   # reset_form
+            gr.update(visible=True),   
+            gr.update(visible=False),  
+            gr.update(visible=False),  
+            gr.update(visible=False)  
         )
     
     def show_register():
         return (
-            gr.update(visible=False),  # login_form
-            gr.update(visible=True),   # register_form
-            gr.update(visible=False),  # forgot_form
-            gr.update(visible=False)   # reset_form
+            gr.update(visible=False),  
+            gr.update(visible=True),  
+            gr.update(visible=False),  
+            gr.update(visible=False)  
         )
     
     def show_forgot():
         return (
-            gr.update(visible=False),  # login_form
-            gr.update(visible=False),  # register_form
-            gr.update(visible=True),   # forgot_form
-            gr.update(visible=False)   # reset_form
+            gr.update(visible=False),  
+            gr.update(visible=False),  
+            gr.update(visible=True),  
+            gr.update(visible=False)  
         )
     
     def show_reset():
         return (
-            gr.update(visible=False),  # login_form
-            gr.update(visible=False),  # register_form
-            gr.update(visible=False),  # forgot_form
-            gr.update(visible=True)    # reset_form
+            gr.update(visible=False), 
+            gr.update(visible=False),  
+            gr.update(visible=False),  
+            gr.update(visible=True)   
         )
     
     login_header_btn.click(show_login, outputs=[login_form, register_form, forgot_form, reset_form])
@@ -1536,8 +1714,22 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Chatbot Hành Chính Việt Nam") 
     
     restore_session_input.change(
         restore_session_from_id,
-        inputs=[restore_session_input, session_state],
-        outputs=[session_state, login_header_btn, register_header_btn, login_status, logout_btn]
+        inputs=[restore_session_input, session_state, is_restoring_session],
+        outputs=[session_state, restore_loading, login_header_btn, register_header_btn, login_status, logout_btn]
+    )
+    
+    # Load event để trigger restore session sau khi app đã render xong
+    # JavaScript sẽ tự động set value vào restore_session_input khi app load
+    def on_app_load():
+        """Callback khi app load - JavaScript sẽ tự động trigger restore"""
+        # Không cần làm gì ở đây, JavaScript sẽ tự động set value vào restore_session_input
+        # và trigger change event, điều này sẽ gọi restore_session_from_id
+        pass
+    
+    app.load(
+        fn=on_app_load,
+        inputs=[],
+        outputs=[]
     )
 
 if __name__ == "__main__":
