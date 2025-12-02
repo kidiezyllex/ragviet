@@ -5,6 +5,7 @@ import os
 import gradio as gr
 from typing import List, Tuple, Dict, Optional
 import logging
+import textwrap
 from dotenv import load_dotenv
 import shutil
 import json
@@ -562,159 +563,58 @@ def create_new_chat_session(session_state):
 
 
 def get_chat_sessions_list(session_state):
-    """Lấy danh sách chat sessions - gọi Django API với button Load Chat"""
     if not isinstance(session_state, dict) or not session_state.get("value"):
-        return "Vui lòng đăng nhập để xem lịch sử chat"
+        return []
     
     session_id = session_state["value"]
     result = api_get_chat_sessions(session_id)
     
     if not result.get("success"):
-        return result.get("message", "Không thể lấy danh sách chat")
+        return []
     
     sessions = result.get("sessions", [])
     if not sessions:
-        return "Chưa có cuộc trò chuyện nào"
+        return []
     
-    html_parts = []
-    for idx, session in enumerate(sessions):
+    options = []
+    for session in sessions:
         chat_session_id = session.get("session_id", "")
         updated_time = session.get("updated_at", "")
         last_question = session.get("last_question", "Chưa có câu hỏi nào")
-        
         display_question = last_question[:50] + "..." if len(last_question) > 50 else last_question
-        
-        html_parts.append(f"""
-        <div class="chat-session-item" style="
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 12px;
-            margin: 8px 0;
-            background: var(--background-fill-secondary);
-            border-radius: 8px;
-            border: 1px solid var(--border-color-primary);
-        ">
-            <div style="flex: 1;">
-                <div style="font-weight: 500; margin-bottom: 4px;">{display_question}</div>
-                <div style="font-size: 12px; color: var(--body-text-color-subdued);">{updated_time}</div>
-            </div>
-            <button 
-                class="load-chat-btn" 
-                data-session-id="{chat_session_id}"
-                style="
-                    padding: 8px 16px;
-                    background: var(--primary-500);
-                    color: white;
-                    border: none;
-                    border-radius: 6px;
-                    cursor: pointer;
-                    font-size: 14px;
-                    font-weight: 500;
-                    transition: background 0.2s;
-                "
-                onmouseover="this.style.background='var(--primary-600)'"
-                onmouseout="this.style.background='var(--primary-500)'"
-            >
-                📥 Load Chat
-            </button>
-        </div>
-        """)
+        label = f"{display_question} ({updated_time})"
+        options.append((label, chat_session_id))
     
-    html_content = f"""
-    <div class="chat-sessions-list">
-        {''.join(html_parts)}
-    </div>
-    <script>
-        (function() {{
-            // Handle click on Load Chat buttons
-            function handleLoadChatClick(e) {{
-                const btn = e.target.classList.contains('load-chat-btn') 
-                    ? e.target 
-                    : e.target.closest('.load-chat-btn');
-                
-                if (!btn) return;
-                
-                const sessionId = btn.getAttribute('data-session-id');
-                if (!sessionId) return;
-                
-                // Tìm input với nhiều cách
-                let loadChatInput = document.querySelector('#load_chat_session_input textarea') || 
-                                 document.querySelector('#load_chat_session_input input') ||
-                                 document.querySelector('textarea#load_chat_session_input') ||
-                                 document.querySelector('input#load_chat_session_input');
-                
-                if (!loadChatInput) {{
-                    // Thử tìm bằng data-testid
-                    const allInputs = document.querySelectorAll('textarea[data-testid="textbox"], input[data-testid="textbox"]');
-                    for (const input of allInputs) {{
-                        if (input.closest('#load_chat_session_input')) {{
-                            loadChatInput = input;
-                            break;
-                        }}
-                    }}
-                }}
-                
-                if (loadChatInput) {{
-                    loadChatInput.value = sessionId;
-                    // Trigger events
-                    loadChatInput.dispatchEvent(new Event('input', {{ bubbles: true, cancelable: true }}));
-                    loadChatInput.dispatchEvent(new Event('change', {{ bubbles: true, cancelable: true }}));
-                    
-                    // Thử dùng native setter
-                    try {{
-                        const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
-                            window.HTMLTextAreaElement?.prototype || window.HTMLInputElement?.prototype, 
-                            "value"
-                        )?.set;
-                        if (nativeInputValueSetter) {{
-                            nativeInputValueSetter.call(loadChatInput, sessionId);
-                            loadChatInput.dispatchEvent(new Event('input', {{ bubbles: true, cancelable: true }}));
-                        }}
-                    }} catch (e) {{
-                        console.log('Không thể dùng native setter:', e);
-                    }}
-                }} else {{
-                    console.warn('Không tìm thấy load_chat_session_input');
-                }}
-            }}
-            
-            // Attach event listener
-            document.addEventListener('click', handleLoadChatClick);
-        }})();
-    </script>
-    """
-    
-    return html_content
+    return options
 
 
 def load_chat_session(chat_session_id, session_state):
-    """Load chat history từ một chat session và trả về history cho ChatInterface"""
+    if chat_session_id and "[" in chat_session_id and chat_session_id.endswith("]"):
+        try:
+            chat_session_id = chat_session_id.rsplit("[", 1)[1][:-1]
+        except Exception:
+            pass
     if not chat_session_id or not chat_session_id.strip():
-        return session_state, None, gr.update(value="")
+        return session_state, None, gr.update()
     
     if not isinstance(session_state, dict) or not session_state.get("value"):
         gr.Warning("Vui lòng đăng nhập để load chat")
-        return session_state, None, gr.update(value="")
+        return session_state, None, gr.update()
     
     session_id = session_state["value"]
     
-    # Gọi API để lấy chat history
     result = api_get_chat_history(chat_session_id, session_id)
     
     if not result.get("success"):
         gr.Error(result.get("message", "Không thể load chat history"))
-        return session_state, None, gr.update(value="")
+        return session_state, None, gr.update()
     
     messages = result.get("messages", [])
     if not messages:
-        gr.Info("Chat session này chưa có tin nhắn nào")
-        # Vẫn cập nhật chat_session_id để tiếp tục chat trong session này
+        gr.Info("Chưa có tin nhắn nào trong cuộc trò chuyện này")
         session_state["chat_session_id"] = chat_session_id
-        return session_state, [], gr.update(value="")
+        return session_state, [], gr.update()
     
-    # Chuyển đổi messages thành format của Gradio ChatInterface (messages format)
-    # Format mới: [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}, ...]
     history = []
     for msg in messages:
         user_msg = msg.get("message", "")
@@ -723,11 +623,10 @@ def load_chat_session(chat_session_id, session_state):
             history.append({"role": "user", "content": user_msg})
             history.append({"role": "assistant", "content": bot_msg})
     
-    # Cập nhật chat_session_id trong session_state
     session_state["chat_session_id"] = chat_session_id
     
-    gr.Success(f"Đã load {len(history)} tin nhắn từ chat session")
-    return session_state, history, gr.update(value="")
+    gr.Success(f"Đã load {len(history)} tin nhắn từ chat")
+    return session_state, history, gr.update()
 
 
 def toggle_chat_history_panel(is_visible, session_state):
@@ -1241,8 +1140,7 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Chatbot Hành Chính Việt Nam") 
     """)
     
     session_state = gr.State(value={"value": None, "user": None, "selected_file": None, "chat_session_id": None})
-    chat_history_visible = gr.State(False)
-    is_restoring_session = gr.State(False)  # State để track đang restore
+    is_restoring_session = gr.State(False)
     
     restore_session_input = gr.Textbox(
         visible=True,
@@ -1271,8 +1169,7 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Chatbot Hành Chính Việt Nam") 
             border-radius: 8px;
             background: var(--background-fill-secondary);
         }
-        #restore_session_input,
-        #load_chat_session_input {
+        #restore_session_input {
             position: absolute !important;
             left: -9999px !important;
             opacity: 0 !important;
@@ -1400,8 +1297,6 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Chatbot Hành Chính Việt Nam") 
                         create_result = api_create_chat_session(session_id)
                         if create_result.get("success"):
                             chat_session_id = create_result.get("chat_session_id")
-                            # Cập nhật session_state ngay lập tức (lưu ý: cái này chỉ update local dict, 
-                            # không update lại state của Gradio trừ khi return, nhưng ChatInterface không support return state)
                             if isinstance(session_state_val, dict):
                                 session_state_val["chat_session_id"] = chat_session_id
                     
@@ -1425,40 +1320,23 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Chatbot Hành Chính Việt Nam") 
                     cache_examples=False
                 )
                 
-                load_chat_session_input = gr.Textbox(
-                    visible=False,
-                    show_label=False,
-                    elem_id="load_chat_session_input",
-                    interactive=False,
-                    container=False,
-                    lines=1,
-                    placeholder=""
-                )
-                
-                chat_history_btn = gr.Button("📜 Lịch sử chat", variant="secondary", elem_id="chat-history-btn")
-                with gr.Column(visible=False, elem_id="chat-history-panel") as chat_history_panel:
+                with gr.Column(elem_id="chat-history-panel") as chat_history_panel:
                     gr.Markdown("### Quản Lý Cuộc Trò Chuyện")
                     with gr.Row():
-                        new_chat_btn = gr.Button("➕ Tạo Cuộc Trò Chuyện Mới", variant="primary")
-                        refresh_sessions_btn = gr.Button("🔄 Làm Mới Danh Sách", variant="secondary")
+                        new_chat_btn = gr.Button("➕ Cuộc trò chuyện mới", variant="primary")
+                        refresh_sessions_btn = gr.Button("📜 Lịch sử chat", variant="secondary")
                     
                     gr.Markdown("---")
-                    gr.Markdown("### Danh Sách Cuộc Trò Chuyện")
-                    
-                    sessions_display = gr.Markdown("Vui lòng đăng nhập để xem lịch sử chat")
+                    gr.Markdown("### Danh sách cuộc trò chuyện")
+                    sessions_dropdown = gr.Dropdown(label="Chọn cuộc trò chuyện", choices=[], interactive=True)
+                    load_selected_chat_btn = gr.Button("📥 Load Chat đã chọn", variant="secondary")
                 
                 def refresh_sessions_fn(session_state):
-                    return get_chat_sessions_list(session_state)
-                
-                chat_history_btn.click(
-                    toggle_chat_history_panel,
-                    inputs=[chat_history_visible, session_state],
-                    outputs=[chat_history_visible, chat_history_panel]
-                ).then(
-                    refresh_sessions_fn,
-                    inputs=[session_state],
-                    outputs=[sessions_display]
-                )
+                    options = get_chat_sessions_list(session_state)
+                    if not options:
+                        return gr.update(choices=[], value=None)
+                    first_value = options[0][1] if isinstance(options[0], tuple) and len(options[0]) > 1 else options[0]
+                    return gr.update(choices=options, value=first_value)
                 
                 new_chat_btn.click(
                     create_new_chat_session,
@@ -1467,25 +1345,25 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Chatbot Hành Chính Việt Nam") 
                 ).then(
                     refresh_sessions_fn,
                     inputs=[session_state],
-                    outputs=[sessions_display]
+                    outputs=[sessions_dropdown]
                 )
                 
                 refresh_sessions_btn.click(
                     refresh_sessions_fn,
                     inputs=[session_state],
-                    outputs=[sessions_display]
+                    outputs=[sessions_dropdown]
                 )
                 
                 app.load(
                     refresh_sessions_fn,
                     inputs=[session_state],
-                    outputs=[sessions_display]
+                    outputs=[sessions_dropdown]
                 )
                 
-                load_chat_session_input.change(
+                load_selected_chat_btn.click(
                     load_chat_session,
-                    inputs=[load_chat_session_input, session_state],
-                    outputs=[session_state, chat_interface.chatbot, load_chat_session_input]
+                    inputs=[sessions_dropdown, session_state],
+                    outputs=[session_state, chat_interface.chatbot, sessions_dropdown]
                 )
             
             with gr.Tab("📁 Quản Lý Tài Liệu"):

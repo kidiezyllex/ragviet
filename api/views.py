@@ -58,10 +58,6 @@ def generate_answer(query: str, context_chunks: list, selected_file: str = None)
     if not context_chunks:
         return "Trong các tài liệu đã upload chưa có thông tin về nội dung này."
     
-    max_context_chunks = 10
-    if len(context_chunks) > max_context_chunks:
-        context_chunks = context_chunks[:max_context_chunks]
-    
     context_by_file = {}
     for chunk in context_chunks:
         filename = chunk['filename']
@@ -146,8 +142,7 @@ Vui lòng thêm GROQ_API_KEY vào file .env để chatbot có thể trả lời 
                     model=llm_model,
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.1,
-                    # ⚡ Giảm nhẹ max_tokens để trả lời nhanh hơn nhưng vẫn đủ dài
-                    max_tokens=3072
+                    max_tokens=4096
                 )
                 answer = response.choices[0].message.content
                 if answer:
@@ -170,8 +165,7 @@ Vui lòng thêm GROQ_API_KEY vào file .env để chatbot có thể trả lời 
                                 model=llm_model,
                                 messages=[{"role": "user", "content": prompt}],
                                 temperature=0.1,
-                                # Retry với giới hạn cao hơn nhưng vẫn vừa phải
-                                max_tokens=4096
+                                max_tokens=8192
                             )
                             new_answer = response.choices[0].message.content
                             if len(new_answer) > len(answer):
@@ -464,11 +458,7 @@ class ChatSendView(APIView):
         try:
             logger.info(f"Đang tìm kiếm câu trả lời cho: {message} (file: {selected_file})")
             
-            # ⚡ Tối ưu: giảm nhẹ số lượng kết quả search ban đầu để tăng tốc
-            # - Nếu đã chọn file cụ thể: ít nhiễu hơn, chỉ cần top_k nhỏ hơn
-            # - Nếu không chọn file: vẫn giữ tương đối cao để không giảm độ chính xác
-            base_top_k = 24 if selected_file else 30
-            search_results = vector_store.search(message, top_k=base_top_k, filename=selected_file)
+            search_results = vector_store.search(message, top_k=30, filename=selected_file)
             
             if not search_results:
                 response = "Không tìm thấy thông tin liên quan trong các tài liệu đã upload."
@@ -490,18 +480,8 @@ class ChatSendView(APIView):
                     "chat_session_id": chat_session_id
                 }, status=status.HTTP_200_OK)
             
-            # ⚡ Tối ưu: giảm phạm vi trang lân cận để tránh context quá dài
-            expanded_results = vector_store.get_adjacent_chunks(search_results, page_range=1)
-
-            # ⚡ Tối ưu: chỉ dùng reranker khi thực sự cần (khi có nhiều đoạn)
-            if len(expanded_results) <= 8:
-                # ANN search đã đủ tốt với ít kết quả, bỏ qua bước rerank tốn thời gian
-                reranked_results = expanded_results
-            else:
-                # Giữ lại số lượng vừa phải các đoạn quan trọng nhất sau rerank
-                target_top_k = 10
-                reranked_results = reranker.rerank(message, expanded_results, top_k=target_top_k)
-
+            expanded_results = vector_store.get_adjacent_chunks(search_results, page_range=2)
+            reranked_results = reranker.rerank(message, expanded_results, top_k=15)
             answer = generate_answer(message, reranked_results, selected_file)
             
             if session_id and database and auth_manager:
