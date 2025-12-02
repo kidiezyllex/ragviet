@@ -247,10 +247,6 @@ def login_fn(email, password, session_state):
                         <div style="font-size: 13px; opacity: 0.9;">
                             Email: {result['user']['email']}
                         </div>
-                        <div style="font-size: 12px; opacity: 0.8; margin-top: 10px; padding: 8px; background: rgba(0,0,0,0.2); border-radius: 5px; word-break: break-all;">
-                            <strong>Access Token:</strong><br/>
-                            <code style="font-size: 10px;">{access_token}</code>
-                        </div>
                 </div>
             </div>
             <script>
@@ -350,10 +346,6 @@ def register_fn(username, email, password, confirm_password, session_state):
                         </div>
                         <div style="font-size: 13px; opacity: 0.9;">
                             Email: {login_result['user']['email']}
-                        </div>
-                        <div style="font-size: 12px; opacity: 0.8; margin-top: 10px; padding: 8px; background: rgba(0,0,0,0.2); border-radius: 5px; word-break: break-all;">
-                            <strong>Access Token:</strong><br/>
-                            <code style="font-size: 10px;">{access_token}</code>
                         </div>
                 </div>
             </div>
@@ -498,10 +490,6 @@ def restore_session_from_id(stored_session_id, session_state, is_restoring):
                             <div style="font-size: 13px; opacity: 0.9;">
                                 Email: {user['email']}
                             </div>
-                            <div style="font-size: 12px; opacity: 0.8; margin-top: 10px; padding: 8px; background: rgba(0,0,0,0.2); border-radius: 5px; word-break: break-all;">
-                                <strong>Access Token:</strong><br/>
-                                <code style="font-size: 10px;">{access_token}</code>
-                            </div>
                     </div>
                 </div>
                 <script>
@@ -588,14 +576,12 @@ def get_chat_sessions_list(session_state):
     if not sessions:
         return "Chưa có cuộc trò chuyện nào"
     
-    # Tạo HTML với button Load Chat cho mỗi session
     html_parts = []
     for idx, session in enumerate(sessions):
         chat_session_id = session.get("session_id", "")
         updated_time = session.get("updated_at", "")
         last_question = session.get("last_question", "Chưa có câu hỏi nào")
         
-        # Truncate last_question nếu quá dài
         display_question = last_question[:50] + "..." if len(last_question) > 50 else last_question
         
         html_parts.append(f"""
@@ -727,14 +713,15 @@ def load_chat_session(chat_session_id, session_state):
         session_state["chat_session_id"] = chat_session_id
         return session_state, [], gr.update(value="")
     
-    # Chuyển đổi messages thành format của Gradio ChatInterface
-    # Format: [(user_message, bot_response), ...]
+    # Chuyển đổi messages thành format của Gradio ChatInterface (messages format)
+    # Format mới: [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}, ...]
     history = []
     for msg in messages:
         user_msg = msg.get("message", "")
         bot_msg = msg.get("response", "")
         if user_msg and bot_msg:
-            history.append((user_msg, bot_msg))
+            history.append({"role": "user", "content": user_msg})
+            history.append({"role": "assistant", "content": bot_msg})
     
     # Cập nhật chat_session_id trong session_state
     session_state["chat_session_id"] = chat_session_id
@@ -1057,10 +1044,6 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Chatbot Hành Chính Việt Nam") 
                             <div style="font-size: 13px; opacity: 0.9;">
                                 Email: ${userInfo.email || ''}
                             </div>
-                            <div style="font-size: 12px; opacity: 0.8; margin-top: 10px; padding: 8px; background: rgba(0,0,0,0.2); border-radius: 5px; word-break: break-all;">
-                                <strong>Access Token:</strong><br/>
-                                <code style="font-size: 10px;">${savedSession}</code>
-                            </div>
                         </div>
                     </div>
                 `;
@@ -1325,7 +1308,6 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Chatbot Hành Chính Việt Nam") 
     with gr.Row(elem_id="header-tabs-row"):
         with gr.Column(scale=0, min_width=300, elem_classes="auth-section"):
             auth_text = gr.Markdown("**Tài khoản:**", elem_id="auth-text", visible=False)
-            # Loading indicator khi đang restore
             restore_loading = gr.Markdown(
                 visible=False,
                 elem_id="restore-loading",
@@ -1382,7 +1364,6 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Chatbot Hành Chính Việt Nam") 
         
         with gr.Column(scale=1):
             with gr.Tab("💬 Chat"):
-                # File selection dropdown
                 gr.Markdown("### Chọn File Để Hỏi (Tùy chọn)")
                 gr.Markdown("*Nếu bạn chưa đăng nhập, thì chỉ có thể sử dụng file mẫu có sẵn của chúng tôi. Vui lòng đăng nhập để sử dụng đầy đủ các tính năng nhé!*")
                 
@@ -1395,7 +1376,6 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Chatbot Hành Chính Việt Nam") 
                 )
                 file_selection_output = gr.Textbox(label="Trạng thái", interactive=False, lines=1)
                 
-                # Load file list
                 def update_file_dropdown():
                     _, file_names = get_uploaded_files()
                     return gr.Dropdown(choices=[""] + file_names, value=None)
@@ -1406,19 +1386,16 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Chatbot Hành Chính Việt Nam") 
                     outputs=[file_selection_output, session_state]
                 )
                 
-                # Chat interface
                 def chat_wrapper(message, history, session_state_val):
                     session_id = None
                     selected_file = None
                     chat_session_id = None
                     
-                    # session_state_val được truyền vào từ additional_inputs
                     if isinstance(session_state_val, dict):
                         session_id = session_state_val.get("value")
                         selected_file = session_state_val.get("selected_file")
                         chat_session_id = session_state_val.get("chat_session_id")
                     
-                    # Nếu user đã đăng nhập nhưng chưa có chat_session_id, tạo session mới qua API
                     if session_id and not chat_session_id:
                         create_result = api_create_chat_session(session_id)
                         if create_result.get("success"):
@@ -1432,9 +1409,12 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Chatbot Hành Chính Việt Nam") 
                     
                     return response
                 
+                chatbot = gr.Chatbot(type="messages", label="Chat với RagVietBot")
+                
                 chat_interface = gr.ChatInterface(
                     fn=chat_wrapper,
                     additional_inputs=[session_state],
+                    chatbot=chatbot,
                     title="Chat với RagVietBot",
                     description="Đặt câu hỏi về nội dung các tài liệu đã upload",
                     examples=[
@@ -1445,7 +1425,6 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Chatbot Hành Chính Việt Nam") 
                     cache_examples=False
                 )
                 
-                # Hidden input để trigger load chat từ button
                 load_chat_session_input = gr.Textbox(
                     visible=False,
                     show_label=False,
@@ -1503,7 +1482,6 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Chatbot Hành Chính Việt Nam") 
                     outputs=[sessions_display]
                 )
                 
-                # Handle load chat session
                 load_chat_session_input.change(
                     load_chat_session,
                     inputs=[load_chat_session_input, session_state],
@@ -1511,7 +1489,6 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Chatbot Hành Chính Việt Nam") 
                 )
             
             with gr.Tab("📁 Quản Lý Tài Liệu"):
-                # Kiểm tra đăng nhập để hiển thị upload
                 gr.Markdown("### Upload File PDF")
                 gr.Markdown("*⚠️ Chỉ người dùng đã đăng nhập mới có thể upload file. Người dùng chưa đăng nhập chỉ có thể sử dụng các file cố định.*")
                 
@@ -1718,12 +1695,8 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Chatbot Hành Chính Việt Nam") 
         outputs=[session_state, restore_loading, login_header_btn, register_header_btn, login_status, logout_btn]
     )
     
-    # Load event để trigger restore session sau khi app đã render xong
-    # JavaScript sẽ tự động set value vào restore_session_input khi app load
     def on_app_load():
         """Callback khi app load - JavaScript sẽ tự động trigger restore"""
-        # Không cần làm gì ở đây, JavaScript sẽ tự động set value vào restore_session_input
-        # và trigger change event, điều này sẽ gọi restore_session_from_id
         pass
     
     app.load(
@@ -1734,4 +1707,4 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Chatbot Hành Chính Việt Nam") 
 
 if __name__ == "__main__":
     logger.info("Khởi động ứng dụng Chatbot Hành Chính Việt Nam...")
-    app.launch(server_name="0.0.0.0", share=False)
+    app.launch(server_name="0.0.0.0", share=True)
