@@ -1275,7 +1275,8 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Chatbot Hành Chính Việt Nam") 
                 
                 def update_file_dropdown():
                     _, file_names = get_uploaded_files()
-                    return gr.Dropdown(choices=[""] + file_names, value=None)
+                    choices = [("Chọn tất cả các file đã tải lên", "")] + [(name, name) for name in file_names]
+                    return gr.Dropdown(choices=choices, value="")
                 
                 file_selection_dropdown.change(
                     select_file_fn,
@@ -1327,7 +1328,7 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Chatbot Hành Chính Việt Nam") 
                         refresh_sessions_btn = gr.Button("📜 Lịch sử chat", variant="secondary")
                     
                     gr.Markdown("---")
-                    gr.Markdown("### Danh sách cuộc trò chuyện")
+                    gr.Markdown("### Tuỳ chọn Chat")
                     sessions_dropdown = gr.Dropdown(label="Chọn cuộc trò chuyện", choices=[], interactive=True)
                     load_selected_chat_btn = gr.Button("📥 Load Chat đã chọn", variant="secondary")
                 
