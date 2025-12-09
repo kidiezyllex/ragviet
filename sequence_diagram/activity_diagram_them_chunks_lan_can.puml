@@ -1,0 +1,76 @@
+@startuml
+|Agent (Actor)|
+start
+
+:Gửi yêu cầu thêm chunks lân cận đến AdjacentChunksService\nkèm theo danh sách chunks ban đầu và page_range\n(mặc định là 2);
+
+|#AntiqueWhite|Hệ thống (System)|
+:Nhận yêu cầu thêm chunks lân cận từ Agent\nvới danh sách chunks ban đầu và page_range;
+
+:Kiểm tra xem danh sách chunks có rỗng hay không?;
+
+if (Danh sách chunks rỗng?) then (có)
+  |#AntiqueWhite|Hệ thống (System)|
+  :Hiển thị kết quả thành công với danh sách rỗng trên Dialog;
+  
+  :Trả về kết quả thành công với danh sách expanded_chunks rỗng cho Agent;
+  
+  |Agent (Actor)|
+  :Nhận kết quả thành công từ Hệ thống\nvới danh sách expanded_chunks rỗng;
+  
+  stop
+  
+else (không)
+  |#AntiqueWhite|Hệ thống (System)|
+  :Gửi yêu cầu lấy chunks lân cận tới VectorStore\nvới danh sách chunks và page_range;
+  
+  :Khởi tạo danh sách expanded_chunks;
+  
+  :Thêm tất cả chunks ban đầu vào expanded_chunks;
+  
+  repeat :Duyệt qua từng chunk trong danh sách chunks ban đầu;
+    |#AntiqueWhite|Hệ thống (System)|
+    :Gửi yêu cầu lấy danh sách chunks của file\ntừ Metadata Index;
+    
+    :Nhận danh sách file_chunks\n(tất cả chunks của file đó) từ Metadata Index;
+    
+    repeat :Duyệt qua từng chunk trong file_chunks;
+      |#AntiqueWhite|Hệ thống (System)|
+      :Kiểm tra khoảng cách trang có nhỏ hơn\nhoặc bằng page_range hay không?;
+      
+      if (Khoảng cách hợp lệ và không phải cùng trang\nvà chưa được thêm?) then (có)
+        |#AntiqueWhite|Hệ thống (System)|
+        :Thêm chunk vào expanded_chunks;
+        
+      endif
+      
+    repeat while (Còn chunk trong file_chunks?) is (có)
+    ->không;
+    
+  repeat while (Còn chunk trong danh sách chunks ban đầu?) is (có)
+  ->không;
+  
+  |#AntiqueWhite|Hệ thống (System)|
+  :Sắp xếp expanded_chunks theo thứ tự\n(filename, page_number, chunk_id);
+  
+  :Tính toán thống kê;
+  
+  :Nhận expanded_chunks từ VectorStore;
+  
+  :Format dữ liệu và thống kê;
+  
+  :Hiển thị kết quả thành công trên Dialog;
+  
+  :Trả về kết quả thành công với expanded_chunks\nvà statistics cho Agent;
+  
+  |Agent (Actor)|
+  :Nhận kết quả thành công từ Hệ thống\nvới expanded_chunks và statistics;
+  
+  :Tiến hành sử dụng chunks đã mở rộng\ncho các mục đích tiếp theo\n(cung cấp context đầy đủ hơn cho việc xử lý và trả lời câu hỏi);
+  
+  stop
+  
+endif
+
+@enduml
+

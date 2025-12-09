@@ -1,0 +1,50 @@
+Mô tả chức năng: Chức năng xem thống kê tần suất sử dụng của người dùng cho phép quản trị viên (Admin) xem các thống kê về hoạt động của người dùng trong hệ thống, bao gồm số lần đăng nhập, số câu hỏi đã gửi, số file đã upload, số chat sessions đã tạo và tần suất sử dụng theo các khoảng thời gian khác nhau (ngày, tuần, tháng). Admin có thể xem thống kê cho một người dùng cụ thể hoặc tất cả người dùng.
+Trình tự thực hiện:
+1. Quản trị viên (Admin) chọn xem thống kê tần suất sử dụng trong giao diện quản trị (Admin UI), có thể chọn user_id cụ thể hoặc tất cả người dùng, và có thể chọn khoảng thời gian (start_date, end_date).
+2. Giao diện (Admin UI) gửi yêu cầu GET đến Backend API (UserStatisticsView) kèm theo user_id (nếu có), start_date, end_date và session_id.
+3. Backend API gửi yêu cầu kiểm tra session tới AuthManager với session_id.
+4. AuthManager gửi truy vấn kiểm tra session trong Database (MongoDB).
+Trường hợp 1: Session không hợp lệ hoặc chưa đăng nhập
+5. Database trả về kết quả không tìm thấy session cho AuthManager.
+6. AuthManager trả về kết quả không tìm thấy user cho Backend API.
+7. Backend API trả về thông báo "Vui lòng đăng nhập" cho FrontEnd.
+8. Giao diện hiển thị thông báo lỗi yêu cầu đăng nhập cho quản trị viên.
+Trường hợp 2: Session hợp lệ
+5. Database trả về user object cho AuthManager.
+6. AuthManager trả về user object cho Backend API.
+7. Backend API tiến hành kiểm tra quyền admin của người dùng (kiểm tra user có role="admin" hoặc is_admin=true hay không).
+Trường hợp 2.1: Không có quyền admin
+8. Backend API trả về thông báo "Không có quyền truy cập" cho FrontEnd.
+9. Giao diện hiển thị thông báo lỗi không có quyền cho quản trị viên.
+Trường hợp 2.2: Có quyền admin
+8. Backend API kiểm tra xem có user_id cụ thể được cung cấp hay không.
+Trường hợp 2.2.1: Có user_id cụ thể
+9. Backend API gửi yêu cầu kiểm tra user_id có tồn tại trong Database hay không.
+Trường hợp 2.2.1.1: User không tồn tại
+10. Database trả về kết quả không tìm thấy user cho Backend API.
+11. Backend API trả về thông báo "Người dùng không tồn tại" cho FrontEnd.
+12. Giao diện hiển thị thông báo lỗi cho quản trị viên.
+Trường hợp 2.2.1.2: User tồn tại
+10. Backend API gửi yêu cầu lấy thống kê tần suất sử dụng tới Database với user_id, start_date và end_date.
+Trường hợp 2.2.2: Không có user_id (thống kê tất cả người dùng)
+9. Backend API gửi yêu cầu lấy thống kê tần suất sử dụng của tất cả người dùng tới Database với start_date và end_date.
+10. Database tiến hành đếm số lần đăng nhập từ collection auth_sessions theo user_id và khoảng thời gian.
+11. Database tiến hành đếm số câu hỏi đã gửi từ collection chat_history theo user_id và khoảng thời gian.
+12. Database tiến hành đếm số file đã upload (từ selected_file trong chat_history) theo user_id và khoảng thời gian.
+13. Database tiến hành đếm số chat sessions đã tạo từ collection chat_sessions theo user_id và khoảng thời gian.
+14. Database tiến hành tính toán tần suất sử dụng theo các khoảng thời gian (ngày, tuần, tháng).
+15. Database tiến hành nhóm dữ liệu theo các khoảng thời gian để tạo biểu đồ xu hướng.
+Trường hợp 2.2.2.1: Không có dữ liệu thống kê
+16. Database trả về object thống kê rỗng cho Backend API.
+17. Backend API tiến hành format dữ liệu với các giá trị mặc định (0) cho tất cả các chỉ số.
+18. Backend API trả về kết quả thành công với thống kê mặc định cho FrontEnd.
+19. Giao diện hiển thị thống kê với tất cả giá trị 0 cho quản trị viên.
+Trường hợp 2.2.2.2: Có dữ liệu thống kê
+16. Database trả về object thống kê (login_count, question_count, file_count, session_count, frequency_by_period) cho Backend API.
+17. Backend API tiến hành format và tính toán thêm các chỉ số phụ (tỷ lệ, xu hướng, so sánh).
+18. Backend API tiến hành loại bỏ thông tin nhạy cảm khỏi dữ liệu thống kê.
+19. Backend API trả về kết quả thành công kèm theo dữ liệu thống kê đã được format cho FrontEnd.
+20. Giao diện tiến hành vẽ biểu đồ (line chart, bar chart) và tạo bảng thống kê từ dữ liệu nhận được.
+21. Giao diện hiển thị thống kê tần suất sử dụng với biểu đồ và bảng dữ liệu chi tiết cho quản trị viên.
+Kết quả: Quá trình xem thống kê tần suất sử dụng thành công. Quản trị viên có thể xem các chỉ số thống kê về hoạt động của người dùng, phân tích xu hướng sử dụng và đưa ra các quyết định quản trị phù hợp.
+

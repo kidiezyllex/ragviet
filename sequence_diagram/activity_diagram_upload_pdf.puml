@@ -1,0 +1,129 @@
+@startuml
+|Người dùng (Actor)|
+start
+
+:Chọn một hoặc nhiều file PDF\ntrong Form Quản lý tài liệu;
+
+:Nhấn nút Upload;
+
+|#AntiqueWhite|Hệ thống (System)|
+:Nhận yêu cầu POST từ Frontend\nvới danh sách file PDF và session_id;
+
+:Gửi yêu cầu kiểm tra session\ntới AuthManager với session_id;
+
+:Gửi truy vấn kiểm tra session\ntrong Database;
+
+if (Session hợp lệ?) then (không)
+  |#AntiqueWhite|Hệ thống (System)|
+  :Nhận kết quả None từ Database;
+  
+  :Nhận kết quả None từ AuthManager;
+  
+  :Hiển thị thông báo lỗi\n"Vui lòng đăng nhập để upload file" trên Dialog;
+  
+  :Trả về thông báo lỗi cho Frontend;
+  
+  |Người dùng (Actor)|
+  :Nhận và xem thông báo lỗi\nyêu cầu đăng nhập hiển thị trên Dialog;
+  
+  stop
+  
+else (có)
+  |#AntiqueWhite|Hệ thống (System)|
+  :Nhận user object từ Database;
+  
+  :Nhận user object từ AuthManager;
+  
+  :Kiểm tra xem có file nào\nđược gửi lên hay không?;
+  
+  if (Có file?) then (không)
+    |#AntiqueWhite|Hệ thống (System)|
+    :Hiển thị thông báo lỗi\n"Vui lòng chọn ít nhất một file PDF" trên Dialog;
+    
+    :Trả về thông báo lỗi cho Frontend;
+    
+    |Người dùng (Actor)|
+    :Nhận và xem thông báo lỗi\nhiển thị trên Dialog;
+    
+    stop
+    
+  else (có)
+    |#AntiqueWhite|Hệ thống (System)|
+    :Kiểm tra từng file có phải\nlà định dạng PDF hay không?;
+    
+    if (Tất cả file đều là PDF?) then (không)
+      |#AntiqueWhite|Hệ thống (System)|
+      :Hiển thị thông báo lỗi\n"File không phải là PDF" trên Dialog;
+      
+      :Trả về thông báo lỗi cho Frontend;
+      
+      |Người dùng (Actor)|
+      :Nhận và xem thông báo lỗi\nhiển thị trên Dialog;
+      
+      stop
+      
+    else (có)
+      |#AntiqueWhite|Hệ thống (System)|
+      :Lưu các file PDF vào File System (MEDIA_ROOT);
+      
+      :Nhận danh sách đường dẫn file (pdf_paths)\ntừ File System;
+      
+      :Gửi yêu cầu xử lý PDF tới PDFProcessor\nvới danh sách đường dẫn file;
+      
+      :Trích xuất văn bản từ từng file PDF\n(extract_text_from_pdf);
+      
+      :Chia nhỏ văn bản thành các chunks\nvới chunk_size=400 và overlap=100 (create_chunks);
+      
+      if (Trích xuất văn bản thành công?) then (không)
+        |#AntiqueWhite|Hệ thống (System)|
+        :Nhận danh sách chunks rỗng từ PDFProcessor;
+        
+        :Hiển thị thông báo lỗi\n"Không thể trích xuất văn bản từ các file PDF" trên Dialog;
+        
+        :Trả về thông báo lỗi cho Frontend;
+        
+        |Người dùng (Actor)|
+        :Nhận và xem thông báo lỗi\nhiển thị trên Dialog;
+        
+        stop
+        
+      else (có)
+        |#AntiqueWhite|Hệ thống (System)|
+        :Nhận danh sách chunks (all_chunks)\nvà thông tin số trang (pages_info) từ PDFProcessor;
+        
+        :Gửi yêu cầu thêm documents vào VectorStore\n(FAISS) với danh sách chunks;
+        
+        :Tạo embeddings cho từng chunk\nsử dụng embedding model;
+        
+        :Lưu các vectors vào FAISS index;
+        
+        :Lưu metadata (filename, page_number, chunk_id)\nvào file JSON;
+        
+        :Nhận kết quả thành công từ VectorStore;
+        
+        :Tính toán tổng số trang\nvà tạo summary chi tiết cho từng file;
+        
+        :Cập nhật danh sách file đã upload trên Table;
+        
+        :Hiển thị thông báo thành công trên Dialog;
+        
+        :Hiển thị thông tin chi tiết (số file đã xử lý,\ntổng số trang, chi tiết từng file) trên Table;
+        
+        :Trả về kết quả thành công kèm theo\nthông tin chi tiết cho Frontend;
+        
+        |Người dùng (Actor)|
+        :Nhận và xem thông báo thành công\nhiển thị trên Dialog;
+        
+        :Nhận và xem danh sách file đã upload\nhiển thị trên Table;
+        
+        :Nhận và xem thông tin chi tiết\n(số file đã xử lý, tổng số trang,\nchi tiết từng file) hiển thị trên Table;
+        
+        stop
+        
+      endif
+    endif
+  endif
+endif
+
+@enduml
+

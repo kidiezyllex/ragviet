@@ -1,0 +1,145 @@
+@startuml
+|Quản trị viên (Actor)|
+start
+
+:Chọn xem thống kê tần suất sử dụng\ntrong Form Quản trị;
+
+:Chọn user_id cụ thể hoặc tất cả người dùng\nbằng Dropdown hoặc Checkbox;
+
+:Chọn khoảng thời gian (start_date, end_date)\nbằng DatePicker;
+
+:Nhấn nút Xem thống kê;
+
+|#AntiqueWhite|Hệ thống (System)|
+:Nhận yêu cầu GET từ Frontend\nvới user_id (nếu có), start_date, end_date và session_id;
+
+:Gửi yêu cầu kiểm tra session\ntới AuthManager với session_id;
+
+:Gửi truy vấn kiểm tra session\ntrong Database;
+
+if (Session hợp lệ?) then (không)
+  |#AntiqueWhite|Hệ thống (System)|
+  :Nhận kết quả không tìm thấy session từ Database;
+  
+  :Nhận kết quả không tìm thấy user từ AuthManager;
+  
+  :Hiển thị thông báo lỗi\n"Vui lòng đăng nhập" trên Dialog;
+  
+  :Trả về thông báo lỗi cho Frontend;
+  
+  |Quản trị viên (Actor)|
+  :Nhận và xem thông báo lỗi\nyêu cầu đăng nhập hiển thị trên Dialog;
+  
+  stop
+  
+else (có)
+  |#AntiqueWhite|Hệ thống (System)|
+  :Nhận user object từ Database;
+  
+  :Nhận user object từ AuthManager;
+  
+  :Kiểm tra quyền admin của người dùng\n(kiểm tra user có role="admin"\nhoặc is_admin=true hay không);
+  
+  if (Có quyền admin?) then (không)
+    |#AntiqueWhite|Hệ thống (System)|
+    :Hiển thị thông báo lỗi\n"Không có quyền truy cập" trên Dialog;
+    
+    :Trả về thông báo lỗi cho Frontend;
+    
+    |Quản trị viên (Actor)|
+    :Nhận và xem thông báo lỗi\nkhông có quyền hiển thị trên Dialog;
+    
+    stop
+    
+  else (có)
+    |#AntiqueWhite|Hệ thống (System)|
+    :Kiểm tra xem có user_id cụ thể\nđược cung cấp hay không?;
+    
+    if (Có user_id cụ thể?) then (có)
+      |#AntiqueWhite|Hệ thống (System)|
+      :Gửi yêu cầu kiểm tra user_id\ncó tồn tại trong Database hay không;
+      
+      if (User tồn tại?) then (không)
+        |#AntiqueWhite|Hệ thống (System)|
+        :Nhận kết quả không tìm thấy user từ Database;
+        
+        :Hiển thị thông báo lỗi\n"Người dùng không tồn tại" trên Dialog;
+        
+        :Trả về thông báo lỗi cho Frontend;
+        
+        |Quản trị viên (Actor)|
+        :Nhận và xem thông báo lỗi\nhiển thị trên Dialog;
+        
+        stop
+        
+      else (có)
+        |#AntiqueWhite|Hệ thống (System)|
+        :Gửi yêu cầu lấy thống kê tần suất sử dụng\ntới Database với user_id, start_date và end_date;
+        
+      endif
+      
+    else (không)
+      |#AntiqueWhite|Hệ thống (System)|
+      :Gửi yêu cầu lấy thống kê tần suất sử dụng\ncủa tất cả người dùng tới Database\nvới start_date và end_date;
+      
+    endif
+    
+    |#AntiqueWhite|Hệ thống (System)|
+    :Đếm số lần đăng nhập từ collection auth_sessions\ntheo user_id và khoảng thời gian;
+    
+    :Đếm số câu hỏi đã gửi từ collection chat_history\ntheo user_id và khoảng thời gian;
+    
+    :Đếm số file đã upload (từ selected_file trong chat_history)\ntheo user_id và khoảng thời gian;
+    
+    :Đếm số chat sessions đã tạo từ collection chat_sessions\ntheo user_id và khoảng thời gian;
+    
+    :Tính toán tần suất sử dụng theo các khoảng thời gian\n(ngày, tuần, tháng);
+    
+    :Nhóm dữ liệu theo các khoảng thời gian\nđể tạo biểu đồ xu hướng;
+    
+    if (Có dữ liệu thống kê?) then (không)
+      |#AntiqueWhite|Hệ thống (System)|
+      :Nhận object thống kê rỗng từ Database;
+      
+      :Format dữ liệu với các giá trị mặc định (0)\ncho tất cả các chỉ số;
+      
+      :Hiển thị thống kê với tất cả giá trị 0 trên Table;
+      
+      :Trả về kết quả thành công với thống kê mặc định cho Frontend;
+      
+      |Quản trị viên (Actor)|
+      :Nhận và xem thống kê với tất cả giá trị 0\nhiển thị trên Table;
+      
+      stop
+      
+    else (có)
+      |#AntiqueWhite|Hệ thống (System)|
+      :Nhận object thống kê (login_count, question_count,\nfile_count, session_count, frequency_by_period) từ Database;
+      
+      :Format và tính toán thêm các chỉ số phụ\n(tỷ lệ, xu hướng, so sánh);
+      
+      :Loại bỏ thông tin nhạy cảm\nkhỏi dữ liệu thống kê;
+      
+      :Vẽ biểu đồ (line chart, bar chart)\ntừ dữ liệu thống kê;
+      
+      :Tạo bảng thống kê từ dữ liệu nhận được;
+      
+      :Hiển thị thống kê tần suất sử dụng\nvới biểu đồ và bảng dữ liệu chi tiết trên Form;
+      
+      :Trả về kết quả thành công kèm theo\ndữ liệu thống kê đã được format cho Frontend;
+      
+      |Quản trị viên (Actor)|
+      :Nhận và xem biểu đồ thống kê\n(line chart, bar chart) hiển thị trên Chart;
+      
+      :Nhận và xem bảng thống kê chi tiết\nhiển thị trên Table;
+      
+      :Nhận và xem thống kê tần suất sử dụng\nvới thông tin đầy đủ hiển thị trên Form;
+      
+      stop
+      
+    endif
+  endif
+endif
+
+@enduml
+

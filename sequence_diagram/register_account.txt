@@ -1,0 +1,69 @@
+title Đăng Ký Tài Khoản - Sequence Diagram
+
+frame "Đăng Ký Tài Khoản"
+actor User
+boundary "Gradio UI" as UI
+boundary "RegisterView (API)" as API
+control "AuthManager" as AUTH
+database "Database (MongoDB)" as DB
+
+User->UI: Nhập thông tin đăng ký\n(username, email, password, confirm_password)
+UI->API: POST /api/auth/register/\n(username, email, password, confirm_password)
+
+API->API: Kiểm tra password != confirm_password
+alt Mật khẩu xác nhận không khớp
+    API-->UI: Response (success: false, message: "Mật khẩu xác nhận không khớp")
+    UI-->User: Hiển thị thông báo lỗi
+else Mật khẩu xác nhận khớp
+    API->AUTH: register(username, email, password)
+    activate AUTH
+    
+    AUTH->AUTH: Kiểm tra validation\n(username, email, password không rỗng,\npassword >= 6 ký tự)
+    alt Thông tin không hợp lệ
+        AUTH-->API: {success: false, message: "Lỗi validation"}
+        deactivate AUTH
+        API-->UI: Response (success: false, message)
+        UI-->User: Hiển thị thông báo lỗi
+    else Thông tin hợp lệ
+        AUTH->DB: create_user(username, email, password)
+        activate DB
+        DB->DB: Kiểm tra email/username đã tồn tại
+        alt Email/username đã tồn tại
+            DB-->AUTH: None
+            deactivate DB
+            AUTH-->API: {success: false, message: "Email hoặc username đã tồn tại"}
+            deactivate AUTH
+            API-->UI: Response (success: false, message)
+            UI-->User: Hiển thị thông báo lỗi
+        else Tạo user thành công
+            DB-->AUTH: user object
+            deactivate DB
+            AUTH-->API: {success: true, message: "Đăng ký thành công!"}
+            deactivate AUTH
+            
+            API->AUTH: login(email, password)
+            activate AUTH
+            AUTH->DB: verify_password(email, password)
+            activate DB
+            DB-->AUTH: user object
+            deactivate DB
+            AUTH->AUTH: Tạo session_id
+            AUTH->DB: save_auth_session(session_id, user_id, user_data)
+            activate DB
+            DB-->AUTH: success
+            deactivate DB
+            AUTH-->API: {success: true, session_id, access_token, user}
+            deactivate AUTH
+            
+            API->DB: create_chat_session(user_id)
+            activate DB
+            DB-->API: chat_session_id
+            deactivate DB
+            
+            API-->UI: Response (success: true, session_id, access_token, user, chat_session_id)
+            UI->UI: Lưu session vào localStorage
+            UI-->User: Hiển thị thông báo thành công\nvà tự động đăng nhập
+        end
+    end
+end
+end

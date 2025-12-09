@@ -1,0 +1,165 @@
+@startuml
+|Agent (Actor)|
+start
+
+:Gửi yêu cầu tạo câu trả lời đến AnswerGenerationService\nkèm theo câu hỏi (query), danh sách context_chunks\nvà selected_file (nếu có);
+
+|#AntiqueWhite|Hệ thống (System)|
+:Nhận yêu cầu tạo câu trả lời từ Agent\nvới query, context_chunks và selected_file;
+
+:Kiểm tra xem danh sách context_chunks có rỗng hay không?;
+
+if (Context chunks rỗng?) then (có)
+  |#AntiqueWhite|Hệ thống (System)|
+  :Hiển thị thông báo\n"Trong các tài liệu đã upload chưa có thông tin về nội dung này." trên Dialog;
+  
+  :Trả về thông báo cho Agent;
+  
+  |Agent (Actor)|
+  :Nhận thông báo từ Hệ thống;
+  
+  stop
+  
+else (không)
+  |#AntiqueWhite|Hệ thống (System)|
+  :Gửi yêu cầu nhóm chunks và tạo context_text\ntới PromptBuilder với danh sách context_chunks;
+  
+  :Nhóm chunks theo file và page;
+  
+  :Sắp xếp và kết hợp texts từ cùng file và page\nthành context_text;
+  
+  :Nhận context_text từ PromptBuilder;
+  
+  :Gửi yêu cầu tạo prompt tới PromptBuilder\nvới query, context_text và selected_file;
+  
+  :Tạo prompt template với các yêu cầu chi tiết\n(đọc kỹ tài liệu, trả lời đầy đủ không cắt cụt,\nsử dụng định dạng markdown, cấu trúc rõ ràng,\nngôn ngữ hành chính chuẩn mực);
+  
+  :Nhận prompt đã hoàn chỉnh từ PromptBuilder;
+  
+  :Kiểm tra xem llm_client có tồn tại hay không?;
+  
+  if (LLM client tồn tại?) then (không)
+    |#AntiqueWhite|Hệ thống (System)|
+    :Hiển thị thông báo lỗi\n"Chưa cấu hình LLM API key" trên Dialog;
+    
+    :Trả về thông báo lỗi cùng với context_text cho Agent;
+    
+    |Agent (Actor)|
+    :Nhận thông báo lỗi từ Hệ thống;
+    
+    stop
+    
+  else (có)
+    |#AntiqueWhite|Hệ thống (System)|
+    :Gửi yêu cầu tạo câu trả lời tới LLM Client với prompt;
+    
+    :Kiểm tra llm_provider;
+    
+    if (Provider được hỗ trợ?) then (không)
+      |#AntiqueWhite|Hệ thống (System)|
+      :Nhận lỗi từ LLM Client;
+      
+      :Hiển thị thông báo lỗi\n"LLM provider không được hỗ trợ" trên Dialog;
+      
+      :Trả về thông báo lỗi cùng với context_text cho Agent;
+      
+      |Agent (Actor)|
+      :Nhận thông báo lỗi từ Hệ thống;
+      
+      stop
+      
+    else (có - Provider là Groq)
+      |#AntiqueWhite|Hệ thống (System)|
+      :Gửi yêu cầu tạo câu trả lời tới Groq API\nvới model, messages, temperature=0.1 và max_tokens=4096;
+      
+      :Xử lý prompt và tạo câu trả lời;
+      
+      if (Model chính thành công?) then (không)
+        |#AntiqueWhite|Hệ thống (System)|
+        :Nhận exception từ Groq API;
+        
+        :Khởi tạo danh sách fallback_models\n(mistral-saba-24b, llama-3.1-8b-instant, llama-3.1-70b-versatile);
+        
+        :Đánh dấu chưa tìm thấy answer thành công;
+        
+        repeat :Thử các model dự phòng;
+          |#AntiqueWhite|Hệ thống (System)|
+          :Gửi yêu cầu tới Groq API\nvới fallback_model hiện tại;
+          
+          if (Model dự phòng thành công?) then (có)
+            |#AntiqueWhite|Hệ thống (System)|
+            :Nhận response với answer từ Groq API;
+            
+            :Đánh dấu đã tìm thấy answer thành công;
+            
+          else (không)
+            |#AntiqueWhite|Hệ thống (System)|
+            :Nhận exception từ Groq API;
+            
+          endif
+          
+        repeat while (Còn model dự phòng chưa thử\nvà chưa tìm thấy answer?) is (có)
+        ->không;
+        
+        if (Đã tìm thấy answer từ model dự phòng?) then (không)
+          |#AntiqueWhite|Hệ thống (System)|
+          :Tất cả models đều lỗi;
+          
+          :Nhận exception từ LLM Client;
+          
+          :Hiển thị thông báo lỗi\n"Lỗi khi tạo câu trả lời" trên Dialog;
+          
+          :Trả về thông báo lỗi cùng với context_text cho Agent;
+          
+          |Agent (Actor)|
+          :Nhận thông báo lỗi từ Hệ thống;
+          
+          stop
+          
+        else (có)
+          |#AntiqueWhite|Hệ thống (System)|
+          :Đã có answer từ model dự phòng;
+          
+        endif
+        
+      else (có)
+        |#AntiqueWhite|Hệ thống (System)|
+        :Đã có answer từ model chính;
+        
+      endif
+      
+      |#AntiqueWhite|Hệ thống (System)|
+      :Nhận response với answer từ Groq API\n(từ model chính hoặc model dự phòng);
+      
+      :Kiểm tra xem answer có thể bị cắt cụt hay không\n(kiểm tra các pattern như kết thúc bằng\n"như sau:", "bao gồm:", "cụ thể:", ...);
+      
+      if (Answer bị cắt cụt?) then (có)
+        |#AntiqueWhite|Hệ thống (System)|
+        :Gửi yêu cầu lại tới Groq API\nvới max_tokens=8192 để lấy câu trả lời đầy đủ hơn;
+        
+        :Nhận response với answer đầy đủ từ Groq API;
+        
+      endif
+      
+      |#AntiqueWhite|Hệ thống (System)|
+      :Nhận answer từ LLM Client;
+      
+      :Format và làm sạch answer\n(loại bỏ ký tự thừa, chuẩn hóa format);
+      
+      :Hiển thị kết quả thành công trên Dialog;
+      
+      :Trả về kết quả thành công kèm theo answer cho Agent;
+      
+      |Agent (Actor)|
+      :Nhận kết quả thành công từ Hệ thống\nvới answer đầy đủ, chính xác và có định dạng đẹp;
+      
+      :Tiến hành sử dụng câu trả lời cho các mục đích tiếp theo\n(hiển thị cho người dùng, lưu vào database, ...);
+      
+      stop
+      
+    endif
+  endif
+endif
+
+@enduml
+

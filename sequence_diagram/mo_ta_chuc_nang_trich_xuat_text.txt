@@ -1,0 +1,24 @@
+Mô tả chức năng: Chức năng trích xuất text từ PDF cho phép Agent (hệ thống tự động hoặc service xử lý) trích xuất văn bản từ file PDF, giữ nguyên dấu tiếng Việt và trả về dữ liệu văn bản đã được tổ chức theo từng trang. Agent có thể sử dụng văn bản đã trích xuất cho các mục đích tiếp theo như lưu trữ, tìm kiếm, phân tích hoặc xử lý ngôn ngữ tự nhiên.
+Trình tự thực hiện:
+1. Agent gửi yêu cầu trích xuất text đến PDFExtractService (API) kèm theo đường dẫn file PDF (pdf_path).
+2. Backend API (PDFExtractService) tiến hành kiểm tra file tồn tại và định dạng PDF.
+Trường hợp 1: File không hợp lệ
+3. Backend API trả về thông báo lỗi cho Agent.
+4. Agent tiến hành xử lý lỗi.
+Trường hợp 2: File hợp lệ
+3. Backend API gửi yêu cầu trích xuất text tới PDFProcessor với đường dẫn file PDF.
+4. PDFProcessor gửi yêu cầu đọc file PDF từ File System.
+5. File System trả về dữ liệu file cho PDFProcessor.
+6. PDFProcessor tiến hành mở PDF và trích xuất text từng trang bằng thư viện fitz (PyMuPDF).
+7. PDFProcessor tiến hành duyệt qua từng trang trong PDF và gọi phương thức page.get_text() để trích xuất văn bản từ mỗi trang.
+8. PDFProcessor tiến hành đóng file PDF sau khi hoàn tất.
+Trường hợp 2.1: Lỗi khi xử lý
+9. PDFProcessor phát sinh exception và trả về cho Backend API.
+10. Backend API trả về thông báo "Lỗi khi trích xuất" cho Agent.
+11. Agent tiến hành xử lý lỗi.
+Trường hợp 2.2: Trích xuất thành công
+9. PDFProcessor trả về danh sách pages_data với format [{page_number, text}, ...] cho Backend API.
+10. Backend API tiến hành format dữ liệu và tính toán thống kê.
+11. Backend API trả về kết quả thành công kèm theo pages_data và statistics cho Agent.
+12. Agent tiến hành sử dụng text đã trích xuất cho các mục đích tiếp theo.
+Kết quả: Quá trình trích xuất text từ PDF thành công. Agent nhận được dữ liệu văn bản đã được tổ chức theo từng trang và có thể sử dụng cho các bước xử lý tiếp theo trong hệ thống.

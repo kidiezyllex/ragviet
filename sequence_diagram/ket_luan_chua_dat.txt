@@ -1,0 +1,9 @@
+5.1.2. Kết quả chưa đạt được
+Mặc dù hệ thống đã đáp ứng phần lớn các chức năng và yêu cầu đặt ra ban đầu, nhưng bên cạnh đó hệ thống vẫn còn một số hạn chế:
+- Phạm vi định dạng tài liệu còn nhiều hạn chế: Hệ thống chưa hỗ trợ nhiều loại định dạng tài liệu khác như DOCX, TXT, HTML, Markdown, hình ảnh có chứa text (OCR),… mà chỉ hỗ trợ xử lý file PDF. Điều này làm giảm tính linh hoạt và khả năng tích hợp với các nguồn tài liệu đa dạng.
+- Hạn chế về chức năng và giao diện người dùng:
+Các chức năng hiện tại mới dừng ở mức cơ bản, chưa có nhiều công cụ nâng cao để hỗ trợ tối ưu quản lý tài liệu như xuất dữ liệu chat ra file, chia sẻ tài liệu giữa các người dùng, cộng tác real-time, hay phân tích xu hướng sử dụng chi tiết.
+Phần giao diện web đã có các tính năng chat và quản lý tài liệu, nhưng được xây dựng trên Gradio framework nên chưa hỗ trợ tốt trên điện thoại hay máy tính bảng. Chưa thử nghiệm nhiều trên các kích thước màn hình khác nhau nên có thể gặp lỗi hiển thị khi dùng trên thiết bị di động.
+- Chưa trải nghiệm trong môi trường thực tế: Việc kiểm thử chỉ mới thực hiện trong môi trường nội bộ với số lượng tài liệu và người dùng hạn chế, chủ yếu chạy trên môi trường phát triển. Chưa đánh giá được hiệu suất và tính ổn định của hệ thống khi có nhiều người dùng đồng thời, xử lý số lượng lớn tài liệu, hay khi vector store phát triển đến quy mô lớn.
+- Chưa có cơ chế quản lý và giám sát nâng cao: Hệ thống chưa có các tính năng như quản lý phiên bản tài liệu (versioning), sao lưu và khôi phục dữ liệu tự động, giới hạn tốc độ API (rate limiting), hay giám sát hiệu suất hệ thống real-time. Chưa có cơ chế cảnh báo khi hệ thống gặp sự cố hoặc khi LLM API không khả dụng.
+

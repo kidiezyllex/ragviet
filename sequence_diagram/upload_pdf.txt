@@ -1,0 +1,65 @@
+title Upload Tài Liệu PDF - Sequence Diagram
+
+frame "Upload Tài Liệu PDF"
+actor User
+boundary "Gradio UI" as UI
+boundary "FileUploadView (API)" as API
+control "AuthManager" as AUTH
+control "PDFProcessor" as PDF
+database "VectorStore (FAISS)" as VS
+database "File System" as FS
+database "Database (MongoDB)" as DB
+
+User->UI: Chọn file PDF và nhấn upload
+UI->API: POST /api/files/upload/\n(files, session_id)
+
+API->AUTH: get_user_from_session(session_id)
+AUTH->DB: Kiểm tra session trong database
+alt Session không hợp lệ hoặc chưa đăng nhập
+    DB-->AUTH: None
+    AUTH-->API: None
+    API-->UI: Response (success: false, message: "Vui lòng đăng nhập để upload file")
+    UI-->User: Hiển thị thông báo lỗi yêu cầu đăng nhập
+else Session hợp lệ
+    DB-->AUTH: user object
+    AUTH-->API: user object
+    
+    API->API: Kiểm tra files có tồn tại
+    alt Không có file nào
+        API-->UI: Response (success: false, message: "Vui lòng chọn ít nhất một file PDF")
+        UI-->User: Hiển thị thông báo lỗi
+    else Có file
+        API->API: Kiểm tra từng file có phải PDF không
+        alt Có file không phải PDF
+            API-->UI: Response (success: false, message: "File không phải là PDF")
+            UI-->User: Hiển thị thông báo lỗi
+        else Tất cả file đều là PDF
+            API->FS: Lưu file vào MEDIA_ROOT
+            FS-->API: pdf_paths
+            
+            API->PDF: process_multiple_pdfs(pdf_paths)
+            PDF->PDF: extract_text_from_pdf() cho từng file
+            PDF->PDF: create_chunks() với chunk_size=400, overlap=100
+            alt Không thể trích xuất văn bản
+                PDF-->API: all_chunks = []
+                API-->UI: Response (success: false, message: "Không thể trích xuất văn bản từ các file PDF")
+                UI-->User: Hiển thị thông báo lỗi
+            else Trích xuất thành công
+                PDF-->API: all_chunks, pages_info
+                
+                API->VS: add_documents(all_chunks)
+                VS->VS: Tạo embeddings cho từng chunk
+                VS->VS: Lưu vào FAISS index
+                VS->VS: Lưu metadata vào JSON
+                VS-->API: success
+                
+                API->API: Tính toán tổng số trang và tạo summary
+                API-->UI: Response (success: true, message, files_processed, total_pages, files_detail)
+                UI->UI: Cập nhật danh sách file đã upload
+                UI-->User: Hiển thị thông báo thành công\nvà thông tin chi tiết
+            end
+        end
+    end
+end
+end
+end

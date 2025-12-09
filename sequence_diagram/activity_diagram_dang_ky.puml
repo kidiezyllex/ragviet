@@ -1,0 +1,109 @@
+@startuml
+|Người dùng (Actor)|
+start
+
+:Điền thông tin đăng ký vào Form Đăng ký\n(username, email, password, confirm_password);
+
+:Nhấn nút Đăng ký;
+
+|#AntiqueWhite|Hệ thống (System)|
+:Nhận yêu cầu POST từ Frontend\nvới thông tin đăng ký;
+
+:Kiểm tra mật khẩu và mật khẩu xác nhận\ncó khớp nhau không?;
+
+if (Mật khẩu xác nhận khớp?) then (không)
+  |#AntiqueWhite|Hệ thống (System)|
+  :Hiển thị thông báo lỗi\n"Mật khẩu xác nhận không khớp" trên Dialog;
+  
+  :Trả về thông báo lỗi cho Frontend;
+  
+  |Người dùng (Actor)|
+  :Nhận và xem thông báo lỗi\nhiển thị trên Dialog;
+  
+  stop
+  
+else (có)
+  |#AntiqueWhite|Hệ thống (System)|
+  :Gửi yêu cầu đăng ký tới AuthManager\nvới thông tin username, email và password;
+  
+  :Kiểm tra validation thông tin\n(username, email, password không rỗng,\npassword phải có ít nhất 6 ký tự);
+  
+  if (Thông tin hợp lệ?) then (không)
+    |#AntiqueWhite|Hệ thống (System)|
+    :Nhận kết quả lỗi validation từ AuthManager;
+    
+    :Hiển thị thông báo lỗi validation trên Dialog;
+    
+    :Trả về thông báo lỗi cho Frontend;
+    
+    |Người dùng (Actor)|
+    :Nhận và xem thông báo lỗi\nhiển thị trên Dialog;
+    
+    stop
+    
+  else (có)
+    |#AntiqueWhite|Hệ thống (System)|
+    :Gửi yêu cầu tạo user tới Database\nvới thông tin username, email\nvà password đã được hash;
+    
+    :Kiểm tra email hoặc username\nđã tồn tại trong hệ thống chưa?;
+    
+    if (Email/username đã tồn tại?) then (có)
+      |#AntiqueWhite|Hệ thống (System)|
+      :Nhận kết quả None từ Database;
+      
+      :Hiển thị thông báo lỗi\n"Email hoặc username đã tồn tại" trên Dialog;
+      
+      :Trả về thông báo lỗi cho Frontend;
+      
+      |Người dùng (Actor)|
+      :Nhận và xem thông báo lỗi\nhiển thị trên Dialog;
+      
+      stop
+      
+    else (chưa)
+      |#AntiqueWhite|Hệ thống (System)|
+      :Tạo user mới trong Database;
+      
+      :Nhận user object từ Database;
+      
+      :Nhận kết quả đăng ký thành công từ AuthManager;
+      
+      :Gửi yêu cầu tự động đăng nhập\ntới AuthManager với email và password;
+      
+      :Gửi yêu cầu xác thực mật khẩu tới Database;
+      
+      :Xác thực mật khẩu và nhận user object từ Database;
+      
+      :Tạo session_id mới cho người dùng;
+      
+      :Gửi yêu cầu lưu session vào Database;
+      
+      :Lưu session và nhận kết quả thành công từ Database;
+      
+      :Nhận thông tin session (session_id, access_token, user)\ntừ AuthManager;
+      
+      :Gửi yêu cầu tạo chat session mới\ntới Database với user_id;
+      
+      :Tạo chat session và nhận chat_session_id từ Database;
+      
+      :Lưu session vào localStorage;
+      
+      :Hiển thị thông báo thành công trên Dialog;
+      
+      :Hiển thị thông tin người dùng đã đăng nhập trên Form;
+      
+      :Trả về kết quả đăng ký thành công kèm theo\nthông tin session, user và chat_session_id cho Frontend;
+      
+      |Người dùng (Actor)|
+      :Nhận và xem thông báo thành công\nhiển thị trên Dialog;
+      
+      :Nhận và xem thông tin người dùng đã đăng nhập\nhiển thị trên Form;
+      
+      stop
+      
+    endif
+  endif
+endif
+
+@enduml
+

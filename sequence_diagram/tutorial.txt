@@ -1,0 +1,181 @@
+1. Các thực thể
+participant Participant → Tên hiển thị: Participant → Hình chữ nhật bình thường → Dùng chung cho mọi thực thể, kiểu mặc định an toàn nhất
+participant Rounded → Tên hiển thị: Rounded → Hình chữ nhật bo góc tròn → Thường dùng cho object/instance tạm thời hoặc muốn phân biệt trực quan
+actor Actor → Tên hiển thị: Actor → Hình người que (stick man) → Dùng cho người dùng thật hoặc hệ thống bên ngoài (external actor)
+boundary Boundary → Tên hiển thị: Boundary → Hình chữ nhật + biểu tượng boundary nhỏ góc trên bên phải → Đại diện giao diện (UI, API endpoint, facade, web page…)
+control Control → Tên hiển thị: Control → Hình chữ nhật + biểu tượng control nhỏ → Đại diện lớp điều khiển, controller, service, coordinator logic nghiệp vụ
+entity Entity → Tên hiển thị: Entity → Hình chữ nhật + biểu tượng entity (hình trụ nhỏ) → Đại diện domain object, model, POJO, entity trong DDD
+database Database → Tên hiển thị: Database → Biểu tượng hình trụ database (cylinder) → Dùng cho CSDL, Redis, file system, bất kỳ storage nào
+collections Collections → Tên hiển thị: Collections → Hình chữ nhật + biểu tượng collections → Hiếm dùng, biểu thị tập hợp đối tượng hoặc cache
+queue Queue → Tên hiển thị: Queue → Hình chữ nhật + biểu tượng queue → Dùng cho message queue, Kafka topic, RabbitMQ…
+participant "Tên tùy chỉnh" as alias <<(A,#FFAAAA) Actor>> → Cho phép kết hợp màu + stereotype tùy ý
+participant "Tên tùy chỉnh" as alias [Rounded] → Tạo participant bo góc mà vẫn đặt tên riêng
+
+2. Fragments
+opt → Khối điều kiện tùy chọn (optional) → Dùng khi đoạn xử lý có thể xảy ra hoặc không
+alt → Khối lựa chọn nhiều nhánh (như if-else if-else) → Mỗi nhánh cách nhau bằng else
+else → Dùng để phân tách các nhánh bên trong alt, opt, loop… → Có thể ghi chú điều kiện sau else
+par → Khối thực hiện song song (parallel) → Các nhánh chạy đồng thời, không có thứ tự đảm bảo
+loop → Khối lặp lại → Thường ghi điều kiện lặp ở sau loop (VD: loop 100 times hoặc loop while condition)
+break → Thoát sớm khỏi vòng lặp hoặc alt → Dùng khi muốn ngắt ngay không chạy tiếp các phần sau
+critical → Khối xử lý bất khả xâm phạm (critical section) → Thường dùng trong multithreading, không cho phép lỗi hoặc song song xen vào
+group → Nhóm các message lại với tiêu đề chung → Chỉ để trang trí, không có ngữ nghĩa xử lý
+ref over A,B → Tham chiếu đến một diagram khác (reference) → Dùng để chia nhỏ diagram lớn, ghi ref over các participant liên quan
+teardown → Khối dọn dẹp cuối cùng (destructor) → Ít dùng, chỉ có trong một số phiên bản mới
+note over A → Ghi chú đặt chồng lên một hoặc nhiều participant
+note left of A → Ghi chú bên trái participant/message
+note right of A → Ghi chú bên phải participant/message
+note on link → Ghi chú bám trực tiếp vào mũi tên message
+hnote over A → Ghi chú nổi (highlighted note) → Nền màu vàng nổi bật hơn note thường
+rnote over A → Ghi chú kiểu “rounded note” → Góc bo tròn, đẹp hơn note thường
+delay ... → Thể hiện khoảng chờ thời gian → Chỉ để minh họa có độ trễ
+... → Ba chấm thể hiện thời gian trôi qua mà không có hành động
+|||> → Khoảng trễ dài (rất phổ biến để biểu thị chờ lâu)
+||| → Khoảng thời gian trôi qua ngắn (dùng để căn chỉnh timeline)
+activate A → Kích hoạt lifespan của participant A (vẽ đường đời dài ra)
+deactivate A → Kết thúc lifespan của participant A
+destroy A → Hủy participant (dấu X ở cuối đường đời)
+create A → Tạo participant ngay tại thời điểm đó (thay vì tồn tại từ đầu)
+return → Tin nhắn trả về (return) từ một activation
+
+* Sample 1:
+opt optional
+note over A:info
+A->B:info
+end
+
+* Sample 2:
+alt case 1
+A->B:info
+else case 2
+A->B:info
+else case 3
+A->B:info
+end
+
+* Sample 3:
+loop i < 1000
+note over A:info
+A->B:info
+end
+
+* Sample 4:
+par info
+A->B:info1
+else test
+A->B:info2
+else test
+A->B:info2
+end
+
+3. Frame
+frame Example Diagram
+A->B:info
+C->A: info
+note over B,C:info
+
+4. Messages:
+->   → Mũi tên rỗng (mặc định) → Tin nhắn đồng bộ bình thường (synchronous call), caller chờ trả lời
+-->  → Mũi tên nét đứt rỗng → Tin nhắn trả về (return) đồng bộ
+->>  → Mũi tên đầy (solid arrow) → Tin nhắn đồng bộ nhưng nhấn mạnh (thường dùng cho call quan trọng hoặc kiểu “thô”)
+-->> → Mũi tên nét đứt đầy → Return từ tin nhắn ->> (solid return)
+-x   → Mũi tên có dấu x ở đầu → Lost message (tin nhắn bị mất, gửi vào hư không)
+<-   → Mũi tên rỗng ngược lại (ít dùng) → Tương đương A <-- B
+<--  → Mũi tên nét đứt ngược lại → Return ngược lại (B trả về cho A)
+-o   → Mũi tên có vòng tròn ở đầu → Found message (tin nhắn xuất hiện từ hư không)
+\->  → Mũi tên xiên trái → Dùng khi muốn tránh chồng chéo dây (slant arrow)
+/->  → Mũi tên xiên phải → Dùng khi muốn tránh chồng chéo dây
+-\>  → Mũi tên nét đứt xiên trái → Return xiên
+/--> → Mũi tên nét đứt xiên phải → Return xiên
+->]  → Mũi tên đến khung participant (dùng khi participant nằm ngang)
+A -> B : label → Tin nhắn đồng bộ có nhãn (phổ biến nhất)
+A --> B : label → Return đồng bộ có nhãn (thường dùng để trả về kết quả)
+A ->> B : label → Tin nhắn đồng bộ kiểu “mạnh” (solid), hay dùng cho RPC, HTTP request
+A -->> B : label → Return kiểu solid
+A <<- B : label → Tin nhắn bất đồng bộ từ B về A (asynchronous)
+A <<-- B : label → Return bất đồng bộ
+A -> A : self message → Gọi chính mình (self call), đường đời participant sẽ có activation lồng nhau
+A --> A : self return → Trả về từ self message
+A ..> B : label → Mũi tên chấm chấm → Tin nhắn bất đồng bộ (asynchronous message), caller không chờ
+A ..>> B : label → Tin nhắn bất đồng bộ kiểu solid
+A o-> B : create → Tạo instance B ngay tại thời điểm này (constructor call)
+A *-> B : instantiate → Cũng là tạo instance (kiểu khác của o->)
+A destroy B → Hủy participant B ngay tại chỗ (dấu X xuất hiện)
+A note on link : Ghi chú bám trực tiếp vào mũi tên
+A -> B #red: label → Tin nhắn có màu dây và chữ
+A -> B : label\nline2 → Nhãn nhiều dòng (dùng \n)
+[-> A : message → Tin nhắn từ bên ngoài hệ thống vào A (stimulus từ external)
+A ->] : message → Tin nhắn từ A ra ngoài hệ thống
+|||> → Khoảng trễ dài giữa 2 message (dùng thay cho delay ...)
+|||  → Khoảng thời gian ngắn trôi qua (để căn chỉnh timeline)
+
+* Sample 1:
+A->B:request
+A<--B:response
+
+* Sample 2:
+A->>B:request
+A<<--B:response
+
+* Sample 3:
+A->A:self message
+
+5. Activations 
+* Sample 1:
+participant A
+participant B
+participant C
+participant D
+A->B:info
+activate B
+B->C:info
+activate C
+C->>D:info
+activate D
+B<--C:info
+deactivate C
+A<--B:info
+deactivate B
+B<-D:callback
+deactivate D
+activate B
+A<<--B:info
+deactivate B
+
+* Sample 2:
+participant B
+participant D
+activate D
+B->D:info
+activate B
+deactivateafter B
+D->D:info
+activate D
+space
+deactivate D
+
+* Sample 3:
+activate Alice
+Alice->Alice:privateMethod()
+activate Alice
+Alice<<--Alice:returnValue
+deactivate Alice
+
+Alice->Alice:privateMethod()
+activate Alice
+Alice<<--Alice:returnValue
+deactivateafter Alice
+
+* Auto Activation
+autoactivation on
+A->B:info
+B->C:info
+B<-C:info
+B-->C:info
+B->B:info
+deactivateafter B
+B<--C:info
+A<--B:info
+autoactivation off
+A->B:info
+A<--B:info

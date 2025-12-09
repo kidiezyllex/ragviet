@@ -1,0 +1,40 @@
+Mô tả chức năng: Chức năng tạo câu trả lời cho phép Agent (hệ thống tự động hoặc service xử lý) tạo câu trả lời tự động dựa trên câu hỏi (query) và các chunks ngữ cảnh (context_chunks) đã được tìm kiếm từ tài liệu. Agent sử dụng LLM (Large Language Model) thông qua Groq API để sinh câu trả lời chính xác, đầy đủ và có định dạng đẹp. Hệ thống có cơ chế xử lý lỗi và retry để đảm bảo câu trả lời không bị cắt cụt.
+Trình tự thực hiện:
+1. Agent gửi yêu cầu tạo câu trả lời đến AnswerGenerationService (API) kèm theo câu hỏi (query), danh sách context_chunks và selected_file (nếu có).
+2. Backend API (AnswerGenerationService) tiến hành kiểm tra xem danh sách context_chunks có rỗng hay không.
+Trường hợp 1: Context chunks rỗng
+3. Backend API trả về thông báo "Trong các tài liệu đã upload chưa có thông tin về nội dung này." cho Agent.
+Trường hợp 2: Context chunks không rỗng
+3. Backend API gửi yêu cầu nhóm chunks và tạo context_text tới PromptBuilder với danh sách context_chunks.
+4. PromptBuilder tiến hành nhóm chunks theo file và page, sắp xếp và kết hợp texts từ cùng file và page thành context_text.
+5. PromptBuilder trả về context_text cho Backend API.
+6. Backend API gửi yêu cầu tạo prompt tới PromptBuilder với query, context_text và selected_file.
+7. PromptBuilder tiến hành tạo prompt template với các yêu cầu chi tiết (đọc kỹ tài liệu, trả lời đầy đủ không cắt cụt, sử dụng định dạng markdown, cấu trúc rõ ràng, ngôn ngữ hành chính chuẩn mực).
+8. PromptBuilder trả về prompt đã hoàn chỉnh cho Backend API.
+9. Backend API tiến hành kiểm tra xem llm_client có tồn tại hay không.
+Trường hợp 2.1: LLM client không tồn tại
+10. Backend API trả về thông báo "Chưa cấu hình LLM API key" cùng với context_text cho Agent.
+Trường hợp 2.2: LLM client tồn tại
+10. Backend API gửi yêu cầu tạo câu trả lời tới LLM Client với prompt.
+11. LLM Client tiến hành kiểm tra llm_provider.
+Trường hợp 2.2.1: Provider không được hỗ trợ
+12. LLM Client trả về lỗi cho Backend API.
+13. Backend API trả về thông báo "LLM provider không được hỗ trợ" cùng với context_text cho Agent.
+Trường hợp 2.2.2: Provider là Groq
+21. LLM Client gửi yêu cầu tạo câu trả lời tới Groq API với model, messages, temperature=0.1 và max_tokens=4096.
+22. Groq API tiến hành xử lý prompt và tạo câu trả lời.
+Trường hợp 2.2.2.1: Model không khả dụng
+14. Groq API trả về exception cho LLM Client.
+15. LLM Client tiến hành thử các model dự phòng (mistral-saba-24b, llama-3.1-8b-instant, llama-3.1-70b-versatile).
+16. Với mỗi fallback_model, LLM Client gửi yêu cầu tới Groq API.
+17. Nếu model dự phòng thành công, Groq API trả về response với answer và LLM Client trả về answer cho Backend API.
+18. Nếu tất cả models đều lỗi, LLM Client trả về exception cho Backend API.
+19. Backend API trả về thông báo "Lỗi khi tạo câu trả lời" cùng với context_text cho Agent.
+Trường hợp 2.2.2.2: Model chính thành công
+14. Groq API trả về response với answer cho LLM Client.
+15. LLM Client tiến hành kiểm tra xem answer có thể bị cắt cụt hay không (kiểm tra các pattern như kết thúc bằng "như sau:", "bao gồm:", "cụ thể:", ...). Nếu có, LLM Client gửi yêu cầu lại tới Groq API với max_tokens=8192 để lấy câu trả lời đầy đủ hơn.
+16. LLM Client trả về answer cho Backend API.
+17. Backend API tiến hành format và làm sạch answer (loại bỏ ký tự thừa, chuẩn hóa format).
+18. Backend API trả về kết quả thành công kèm theo answer cho Agent.
+19. Agent tiến hành sử dụng câu trả lời cho các mục đích tiếp theo (hiển thị cho người dùng, lưu vào database, ...).
+Kết quả: Quá trình tạo câu trả lời thành công. Agent nhận được câu trả lời đầy đủ, chính xác và có định dạng đẹp dựa trên các chunks ngữ cảnh từ tài liệu, sẵn sàng để sử dụng cho các bước xử lý tiếp theo.

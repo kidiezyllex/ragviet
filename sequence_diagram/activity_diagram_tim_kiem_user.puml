@@ -1,0 +1,109 @@
+@startuml
+|Quản trị viên (Actor)|
+start
+
+:Nhập từ khóa tìm kiếm (username, email hoặc user_id)\nvào Form Quản trị;
+
+:Nhấn nút Tìm kiếm;
+
+|#AntiqueWhite|Hệ thống (System)|
+:Nhận yêu cầu GET từ Frontend\nvới từ khóa tìm kiếm (search_query) và session_id;
+
+:Gửi yêu cầu kiểm tra session\ntới AuthManager với session_id;
+
+:Gửi truy vấn kiểm tra session\ntrong Database;
+
+if (Session hợp lệ?) then (không)
+  |#AntiqueWhite|Hệ thống (System)|
+  :Nhận kết quả None từ Database;
+  
+  :Nhận kết quả None từ AuthManager;
+  
+  :Hiển thị thông báo lỗi\n"Vui lòng đăng nhập" trên Dialog;
+  
+  :Trả về thông báo lỗi cho Frontend;
+  
+  |Quản trị viên (Actor)|
+  :Nhận và xem thông báo lỗi\nyêu cầu đăng nhập hiển thị trên Dialog;
+  
+  stop
+  
+else (có)
+  |#AntiqueWhite|Hệ thống (System)|
+  :Nhận user object từ Database;
+  
+  :Nhận user object từ AuthManager;
+  
+  :Kiểm tra quyền admin của người dùng\n(kiểm tra user có role="admin"\nhoặc is_admin=true hay không);
+  
+  if (Có quyền admin?) then (không)
+    |#AntiqueWhite|Hệ thống (System)|
+    :Hiển thị thông báo lỗi\n"Không có quyền truy cập" trên Dialog;
+    
+    :Trả về thông báo lỗi cho Frontend;
+    
+    |Quản trị viên (Actor)|
+    :Nhận và xem thông báo lỗi\nkhông có quyền hiển thị trên Dialog;
+    
+    stop
+    
+  else (có)
+    |#AntiqueWhite|Hệ thống (System)|
+    :Kiểm tra xem từ khóa tìm kiếm\ncó rỗng hay không?;
+    
+    if (Từ khóa tìm kiếm rỗng?) then (có)
+      |#AntiqueWhite|Hệ thống (System)|
+      :Hiển thị thông báo lỗi\n"Vui lòng nhập từ khóa tìm kiếm" trên Dialog;
+      
+      :Trả về thông báo lỗi cho Frontend;
+      
+      |Quản trị viên (Actor)|
+      :Nhận và xem thông báo lỗi\nhiển thị trên Dialog;
+      
+      stop
+      
+    else (không)
+      |#AntiqueWhite|Hệ thống (System)|
+      :Gửi yêu cầu tìm kiếm người dùng\ntới Database với từ khóa tìm kiếm;
+      
+      :Tìm kiếm trong collection users\ntheo username, email hoặc user_id\n(sử dụng regex hoặc exact match);
+      
+      if (Tìm thấy người dùng?) then (không)
+        |#AntiqueWhite|Hệ thống (System)|
+        :Nhận danh sách rỗng từ Database;
+        
+        :Hiển thị thông báo\n"Không tìm thấy người dùng nào" trên Dialog;
+        
+        :Trả về kết quả thành công với danh sách rỗng\nvà thông báo cho Frontend;
+        
+        |Quản trị viên (Actor)|
+        :Nhận và xem thông báo không tìm thấy\nhiển thị trên Dialog;
+        
+        stop
+        
+      else (có)
+        |#AntiqueWhite|Hệ thống (System)|
+        :Nhận danh sách user objects phù hợp\nvới từ khóa tìm kiếm từ Database;
+        
+        :Loại bỏ thông tin nhạy cảm\n(password_hash, ...) khỏi danh sách người dùng;
+        
+        :Format dữ liệu trả về\n(chuẩn hóa format, thêm thông tin bổ sung nếu cần);
+        
+        :Hiển thị danh sách người dùng trên Table\nvới các thông tin cơ bản\n(username, email, user_id, created_at, is_active, ...);
+        
+        :Trả về kết quả thành công kèm theo\ndanh sách người dùng và tổng số lượng cho Frontend;
+        
+        |Quản trị viên (Actor)|
+        :Nhận và xem danh sách người dùng\nhiển thị trên Table;
+        
+        :Nhận và xem kết quả tìm kiếm\nvới thông tin người dùng;
+        
+        stop
+        
+      endif
+    endif
+  endif
+endif
+
+@enduml
+

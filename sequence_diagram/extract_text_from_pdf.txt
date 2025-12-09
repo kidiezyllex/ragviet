@@ -1,0 +1,31 @@
+title Trích Xuất Text Từ PDF - Sequence Diagram
+
+frame "Trích Xuất Text Từ PDF"
+actor Agent
+boundary "PDFExtractService (API)" as API
+control "PDFProcessor" as PDF
+database "File System" as FS
+
+Agent->API: Yêu cầu trích xuất text\n(pdf_path)
+API->API: Kiểm tra file tồn tại và định dạng PDF
+alt File không hợp lệ
+    API-->Agent: Response (success: false, message: "Lỗi")
+else File hợp lệ
+    API->PDF: extract_text_from_pdf(pdf_path)
+    PDF->FS: Đọc file PDF
+    FS-->PDF: file data
+    PDF->PDF: Mở PDF và trích xuất text từng trang
+    loop Với mỗi trang
+        PDF->PDF: page.get_text() → pages_data
+    end
+    PDF->PDF: Đóng file PDF
+    alt Lỗi khi xử lý
+        PDF-->API: Exception
+        API-->Agent: Response (success: false, message: "Lỗi khi trích xuất")
+    else Thành công
+        PDF-->API: pages_data [{page_number, text}, ...]
+        API->API: Format dữ liệu và tính thống kê
+        API-->Agent: Response (success: true, pages_data, statistics)
+    end
+end
+

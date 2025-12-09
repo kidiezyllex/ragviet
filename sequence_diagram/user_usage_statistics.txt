@@ -1,0 +1,65 @@
+title Xem Thống Kê Tần Suất Sử Dụng Người Dùng - Sequence Diagram
+
+frame "Xem Thống Kê Tần Suất Sử Dụng Người Dùng"
+actor Admin
+boundary "Admin UI" as UI
+boundary "UserStatisticsView (API)" as API
+control "AuthManager" as AUTH
+database "Database (MongoDB)" as DB
+
+Admin->UI: Chọn xem thống kê tần suất sử dụng\n(có thể chọn user_id cụ thể hoặc tất cả)
+UI->API: GET /api/admin/user-statistics/\n(user_id, start_date, end_date, session_id)
+
+API->AUTH: get_user_from_session(session_id)
+AUTH->DB: Kiểm tra session và lấy user
+alt Session không hợp lệ hoặc chưa đăng nhập
+    DB-->AUTH: không tìm thấy session
+    AUTH-->API: không tìm thấy user
+    API-->UI: Response (success: false, message: "Vui lòng đăng nhập")
+    UI-->Admin: Hiển thị thông báo lỗi yêu cầu đăng nhập
+else Session hợp lệ
+    DB-->AUTH: user object
+    AUTH-->API: user object
+    
+    API->API: Kiểm tra quyền admin\n(user có role="admin" hoặc is_admin=true)
+    alt Không có quyền admin
+        API-->UI: Response (success: false, message: "Không có quyền truy cập")
+        UI-->Admin: Hiển thị thông báo lỗi không có quyền
+    else Có quyền admin
+        opt Có user_id cụ thể
+            API->DB: Kiểm tra user_id có tồn tại
+            alt User không tồn tại
+                DB-->API: không tìm thấy user
+                API-->UI: Response (success: false, message: "Người dùng không tồn tại")
+                UI-->Admin: Hiển thị thông báo lỗi
+            else User tồn tại
+                API->DB: get_user_statistics(user_id, start_date, end_date)
+            end
+        else Không có user_id (thống kê tất cả)
+            API->DB: get_all_users_statistics(start_date, end_date)
+        end
+        
+        DB->DB: Đếm số lần đăng nhập từ auth_sessions
+        DB->DB: Đếm số câu hỏi đã gửi từ chat_history
+        DB->DB: Đếm số file đã upload (từ chat_history selected_file)
+        DB->DB: Đếm số chat sessions đã tạo
+        DB->DB: Tính toán tần suất theo ngày/tuần/tháng
+        DB->DB: Nhóm dữ liệu theo khoảng thời gian
+        
+        alt Không có dữ liệu thống kê
+            DB-->API: statistics = {}
+            API->API: Format dữ liệu với giá trị mặc định (0)
+            API-->UI: Response (success: true, statistics: default_values)
+            UI-->Admin: Hiển thị thống kê với giá trị 0
+        else Có dữ liệu thống kê
+            DB-->API: statistics object\n(login_count, question_count, file_count,\nsession_count, frequency_by_period)
+            API->API: Format và tính toán thêm\n(tỷ lệ, biểu đồ, xu hướng)
+            API->API: Loại bỏ thông tin nhạy cảm
+            API-->UI: Response (success: true, statistics: formatted_data)
+            UI->UI: Vẽ biểu đồ và bảng thống kê
+            UI-->Admin: Hiển thị thống kê tần suất sử dụng\nvới biểu đồ và bảng dữ liệu
+        end
+    end
+end
+end
+
