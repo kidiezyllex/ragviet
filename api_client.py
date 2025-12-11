@@ -1,6 +1,3 @@
-"""
-API Client để gọi Django REST API từ Gradio frontend
-"""
 import requests
 import json
 import os
@@ -30,18 +27,22 @@ def api_login(email, password):
             timeout=10
         )
         try:
-            return response.json()
+            data = response.json()
+            if isinstance(data, dict):
+                data.setdefault("status_code", response.status_code)
+            return data
         except:
             return {
                 "success": False, 
-                "message": f"Lỗi từ server (status {response.status_code})"
+                "message": f"Lỗi từ server (status {response.status_code})",
+                "status_code": response.status_code
             }
     except requests.exceptions.Timeout:
-        return {"success": False, "message": "Lỗi: Kết nối timeout. Vui lòng thử lại."}
+        return {"success": False, "message": "Lỗi: Kết nối timeout. Vui lòng thử lại.", "status_code": None}
     except requests.exceptions.ConnectionError:
-        return {"success": False, "message": "Lỗi: Không thể kết nối đến server. Vui lòng kiểm tra Django backend đã chạy chưa."}
+        return {"success": False, "message": "Lỗi: Không thể kết nối đến server. Vui lòng kiểm tra Django backend đã chạy chưa.", "status_code": None}
     except Exception as e:
-        return {"success": False, "message": f"Lỗi kết nối API: {str(e)}"}
+        return {"success": False, "message": f"Lỗi kết nối API: {str(e)}", "status_code": None}
 
 
 def api_register(username, email, password, confirm_password):

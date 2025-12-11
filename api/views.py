@@ -204,6 +204,50 @@ Vui lòng thêm GROQ_API_KEY vào file .env để chatbot có thể trả lời 
         logger.error(f"Lỗi khi gọi LLM: {str(e)}")
         return f"⚠️ Lỗi khi tạo câu trả lời: {str(e)}\n\nThông tin từ tài liệu:\n\n{context_text}"
 
+COOKIE_NAME = "ragviet_session"
+COOKIE_MAX_AGE = 7 * 24 * 3600  # 7 days
+
+
+def set_auth_cookie(response: Response, session_id: str):
+    """
+    Đặt HTTP-only cookie cho session id.
+    """
+    if not session_id:
+        return response
+    response.set_cookie(
+        COOKIE_NAME,
+        session_id,
+        httponly=True,
+        secure=not settings.DEBUG,  # bật secure khi chạy production/https
+        samesite="Lax",
+        max_age=COOKIE_MAX_AGE,
+        path="/",
+    )
+    return response
+
+
+def clear_auth_cookie(response: Response):
+    response.delete_cookie(COOKIE_NAME, path="/")
+    return response
+
+
+def get_session_id_from_request(request):
+    """
+    Lấy session_id từ nhiều nguồn: body, query, cookie, Authorization header.
+    Thứ tự ưu tiên: body/query -> cookie -> header.
+    """
+    token = None
+    if hasattr(request, "data"):
+        token = request.data.get("session_id")
+    if not token and hasattr(request, "query_params"):
+        token = request.query_params.get("session_id")
+    if not token:
+        token = request.COOKIES.get(COOKIE_NAME)
+    if not token:
+        token = request.META.get('HTTP_AUTHORIZATION', '').replace('Bearer ', '')
+    return token
+
+
 class LoginView(APIView):
     """API endpoint cho đăng nhập"""
     
@@ -246,8 +290,8 @@ class LoginView(APIView):
             chat_session_id = None
             if database:
                 chat_session_id = database.create_chat_session(result["user"]["user_id"])
-            
-            return Response({
+
+            resp = Response({
                 "success": True,
                 "message": result['message'],
                 "session_id": result["session_id"],
@@ -255,6 +299,7 @@ class LoginView(APIView):
                 "user": result["user"],
                 "chat_session_id": chat_session_id
             }, status=status.HTTP_200_OK)
+            return set_auth_cookie(resp, result["session_id"])
         else:
             return Response(
                 {"success": False, "message": result['message']},
@@ -290,8 +335,8 @@ class RegisterView(APIView):
                 chat_session_id = None
                 if database:
                     chat_session_id = database.create_chat_session(login_result["user"]["user_id"])
-                
-                return Response({
+
+                resp = Response({
                     "success": True,
                     "message": result['message'] + " Đang tự động đăng nhập...",
                     "session_id": login_result["session_id"],
@@ -299,6 +344,7 @@ class RegisterView(APIView):
                     "user": login_result["user"],
                     "chat_session_id": chat_session_id
                 }, status=status.HTTP_200_OK)
+                return set_auth_cookie(resp, login_result["session_id"])
             else:
                 return Response({
                     "success": True,
@@ -316,15 +362,16 @@ class LogoutView(APIView):
     """API endpoint cho đăng xuất"""
     
     def post(self, request):
-        session_id = request.data.get('session_id') or request.META.get('HTTP_AUTHORIZATION', '').replace('Bearer ', '')
+        session_id = get_session_id_from_request(request)
         
         if session_id and auth_manager:
             auth_manager.logout(session_id)
-        
-        return Response({
+
+        resp = Response({
             "success": True,
             "message": "Đã đăng xuất"
         }, status=status.HTTP_200_OK)
+        return clear_auth_cookie(resp)
 
 
 class ForgotPasswordView(APIView):
@@ -390,7 +437,7 @@ class VerifySessionView(APIView):
     """API endpoint để verify session"""
     
     def post(self, request):
-        session_id = request.data.get('session_id') or request.META.get('HTTP_AUTHORIZATION', '').replace('Bearer ', '')
+        session_id = get_session_id_from_request(request)
         
         if not session_id or not auth_manager:
             return Response({
@@ -404,12 +451,13 @@ class VerifySessionView(APIView):
             if database:
                 chat_session_id = database.create_chat_session(user["user_id"])
             
-            return Response({
+            resp = Response({
                 "success": True,
                 "valid": True,
                 "user": user,
                 "chat_session_id": chat_session_id
             }, status=status.HTTP_200_OK)
+            return set_auth_cookie(resp, session_id)
         else:
             return Response({
                 "success": False,
@@ -421,7 +469,7 @@ class ChatSendView(APIView):
     
     def post(self, request):
         message = request.data.get('message', '').strip()
-        session_id = request.data.get('session_id') or request.META.get('HTTP_AUTHORIZATION', '').replace('Bearer ', '')
+        session_id = get_session_id_from_request(request)
         selected_file = request.data.get('selected_file')
         chat_session_id = request.data.get('chat_session_id')
         
@@ -511,7 +559,7 @@ class ChatSessionsView(APIView):
     """API endpoint để lấy danh sách chat sessions"""
     
     def get(self, request):
-        session_id = request.query_params.get('session_id') or request.META.get('HTTP_AUTHORIZATION', '').replace('Bearer ', '')
+        session_id = get_session_id_from_request(request)
         
         if not session_id or not auth_manager:
             return Response(
@@ -561,7 +609,7 @@ class CreateChatSessionView(APIView):
     """API endpoint để tạo chat session mới"""
     
     def post(self, request):
-        session_id = request.data.get('session_id') or request.META.get('HTTP_AUTHORIZATION', '').replace('Bearer ', '')
+        session_id = get_session_id_from_request(request)
         
         if not session_id or not auth_manager:
             return Response(
@@ -594,7 +642,7 @@ class ChatHistoryView(APIView):
     """API endpoint để lấy lịch sử chat của một session"""
     
     def get(self, request, session_id):
-        auth_session_id = request.query_params.get('session_id') or request.META.get('HTTP_AUTHORIZATION', '').replace('Bearer ', '')
+        auth_session_id = get_session_id_from_request(request)
         
         if not auth_session_id or not auth_manager:
             return Response(
@@ -621,7 +669,7 @@ class FileUploadView(APIView):
     parser_classes = [MultiPartParser, FormParser]
     
     def post(self, request):
-        session_id = request.data.get('session_id') or request.META.get('HTTP_AUTHORIZATION', '').replace('Bearer ', '')
+        session_id = get_session_id_from_request(request)
         
         if not session_id or not auth_manager:
             return Response(
