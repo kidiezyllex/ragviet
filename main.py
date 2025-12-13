@@ -309,7 +309,7 @@ def render_sidebar(include_file_select: bool = True):
             if include_file_select and file_select is not None:
                 file_select.options = ["Tất cả"] + new_files
 
-        with ui.column().classes("gap-3"):
+        with ui.column().classes("gap-3 w-full"):
             ui.upload(
                 label="Upload tài liệu PDF",
                 multiple=True,
@@ -370,19 +370,32 @@ def home_page():
                 ui.notify(f"Đã chọn tài liệu: {name}", type="positive")
             file_select.on_value_change(update_conv_label)
 
-        # Chat được tích hợp ngay trên trang chủ
-        # Container với flex layout: chat log chiếm phần còn lại, input fixed ở bottom
         msg_input = None
         send_btn = None
         
-        with ui.column().classes("w-full gap-2").style("display: flex; flex-direction: column; height: calc(100vh - 200px); min-height: 500px"):
+        with ui.column().classes("w-full gap-2").style("display: flex; flex-direction: column; height: 85vh"):
             chat_log = ui.column().classes("gap-2 flex-1 overflow-auto border rounded p-3 bg-gray-50 w-full").style("display: flex; flex-direction: column; min-height: 0")
             
             def format_text(text: str) -> str:
-                """Format text: **text** thành <strong>text</strong>"""
+                """Format text: 
+                - **text** thành <strong>text</strong> và đảm bảo tiêu đề nằm riêng 1 dòng
+                - Các dòng bắt đầu bằng "-" nằm riêng mỗi dòng
+                """
                 import re
-                # Thay **text** thành <strong>text</strong>
-                formatted = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', text)
+                formatted = text.replace('\n', '<br>')
+                
+                def replace_bold(match):
+                    bold_text = match.group(1)
+                    return f'<br><strong>{bold_text}</strong><br>'
+                
+                formatted = re.sub(r'\*\*(.+?)\*\*', replace_bold, formatted)
+                
+                formatted = re.sub(r'(?<!<br>)\s+-\s+', r'<br>- ', formatted)
+                
+                formatted = re.sub(r'<br><br>+', r'<br>', formatted)
+                
+                formatted = formatted.strip('<br>')
+                
                 return formatted
 
             def add_message(role: str, text: str):
@@ -397,7 +410,7 @@ def home_page():
                         msg = ui.chat_message("", name="Assistant")
                         # Set HTML content vào message text
                         with msg:
-                            ui.html(formatted_text)
+                            ui.html(formatted_text, sanitize=False)
 
             async def ensure_chat_session():
                 if not session_state.chat_session_id and session_state.session_id:
