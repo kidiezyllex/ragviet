@@ -29,7 +29,12 @@ load_dotenv()
 
 STORAGE_SECRET = os.getenv("STORAGE_SECRET", "ragviet-dev-secret")
 app.storage.secret = STORAGE_SECRET
-ui.add_head_html("<style>.nicegui-content{padding:0!important;}</style>", shared=True)
+ui.add_head_html("""
+<style>
+.nicegui-content{padding:0!important;}
+.q-message-text strong { font-weight: bold; }
+</style>
+""", shared=True)
 
 class SessionState:
     def __init__(self):
@@ -52,15 +57,23 @@ def _get_user_store():
     Lấy storage gắn với client (server-side, không phụ thuộc browser dict).
     Dùng user-level storage để tránh lỗi "response has been built".
     """
-    client_store = getattr(context.client, "storage", None)
-    app_store = getattr(app, "storage", None)
-    store = client_store or app_store
-    if not store:
-        return None
-    user = getattr(store, "user", None)
-    if user is None and isinstance(store, dict):
-        user = store
-    return user
+    try:
+        # Thử lấy từ context.client trước
+        if hasattr(context, "client") and context.client:
+            client_store = getattr(context.client, "storage", None)
+            if client_store:
+                user = getattr(client_store, "user", None)
+                if user is not None:
+                    return user
+        # Fallback về app.storage.user
+        app_store = getattr(app, "storage", None)
+        if app_store:
+            user = getattr(app_store, "user", None)
+            if user is not None:
+                return user
+    except Exception:
+        pass
+    return None
 
 
 def save_session_to_storage():
@@ -83,6 +96,10 @@ def clear_session_storage():
 
 def restore_session_from_storage():
     """Khôi phục session từ local storage nếu còn hợp lệ."""
+    # Nếu đã có session thì không cần restore
+    if session_state.is_logged_in:
+        return True
+    
     user_store = _get_user_store()
     if not user_store:
         return False
@@ -114,6 +131,23 @@ def notify_error(msg: str):
 def require_login() -> bool:
     if not session_state.is_logged_in:
         notify_error("Vui lòng đăng nhập để sử dụng tính năng này")
+        return False
+    return True
+
+
+def require_auth():
+    """Kiểm tra đăng nhập và redirect về /login nếu chưa đăng nhập."""
+    # Khôi phục session từ storage
+    restore_session_from_storage()
+    
+    # Kiểm tra nếu chưa đăng nhập
+    if not session_state.is_logged_in:
+        # Sử dụng JavaScript để redirect đảm bảo hoạt động
+        ui.add_head_html(
+            '<script>window.location.href = "/login";</script>',
+            shared=False
+        )
+        ui.label("Đang chuyển đến trang đăng nhập...").classes("text-center p-4")
         return False
     return True
 
@@ -268,37 +302,30 @@ def render_sidebar(include_file_select: bool = True):
     file_select = None
 
     with ui.column().classes(
-        "bg-gray-50 border-r h-screen p-4 gap-3 shrink-0"
-    ).style("width:25%;max-width:25%;min-width:260px"):
-        ui.label("Documents").classes("text-lg font-semibold")
-
+        "bg-gray-50 border-r h-screen p-4 gap-3 shrink-0 justify-between"
+    ).style("width:25%;max-width:25%;min-width:260px; display: flex; flex-direction: column"):
         def refresh_lists():
             new_text, new_files = refresh_files_list()
-            docs_md.set_content(new_text)
             if include_file_select and file_select is not None:
-                file_select.options = [""] + new_files
+                file_select.options = ["Tất cả"] + new_files
 
-        ui.upload(
-            label="Upload Documents",
-            multiple=True,
-            on_upload=lambda e: (upload_temp_files(e), refresh_lists()),
-        ).props("color=primary flat no-thumbnails").classes("w-full")
+        with ui.column().classes("gap-3"):
+            ui.upload(
+                label="Upload tài liệu PDF",
+                multiple=True,
+                on_upload=lambda e: (upload_temp_files(e), refresh_lists()),
+            ).props("color=primary flat no-thumbnails").classes("w-full")
 
-        if include_file_select:
-            file_select = ui.select(
-                options=[""] + file_names,
-                value="",
-                label="Chọn tài liệu để chat",
-            ).props("clearable dense").classes("w-full")
+            if include_file_select:
+                file_select = ui.select(
+                    options=["Tất cả"] + file_names,
+                    value="Tất cả",
+                    label="Chọn tài liệu để chat",
+                ).props("clearable dense").classes("w-full").style("font-size: 1rem")
 
-        ui.input(
-            placeholder="Search Documents",
-        ).props("dense outlined").classes("w-full")
-
-        docs_md = ui.markdown(text).classes("text-sm bg-white rounded border p-3 h-64 overflow-auto")
-
-        ui.button("Làm mới tài liệu", on_click=refresh_lists).props("outline").classes("w-full")
-        ui.button("Chat với tất cả tài liệu", on_click=lambda: ui.navigate.to("/chat")).classes("w-full")
+            ui.input(
+                placeholder="Tìm kiếm tài liệu",
+            ).props("dense outlined").classes("w-full")
 
         ui.separator()
         with ui.card().classes("w-full shadow-none border p-3 gap-2"):
@@ -328,79 +355,105 @@ def render_shell(include_file_select: bool, content_builder):
 
 @ui.page("/")
 def home_page():
+    if not require_auth():
+        return
+    
     def build_content(file_select):
         # Header cuộc trò chuyện
-        conv_label = ui.label("Conversation with: All Documents").classes("text-xl font-semibold")
+        conv_label = ui.label("Trò chuyện với: Tất cả tài liệu").classes("text-xl font-semibold")
         if file_select:
             def update_conv_label(e):
-                name = e.value or "All Documents"
-                conv_label.set_text(f"Conversation with: {name}")
+                name = e.value or "Tất cả"
+                if name == "Tất cả":
+                    name = "Tất cả tài liệu"
+                conv_label.set_text(f"Trò chuyện với: {name}")
                 ui.notify(f"Đã chọn tài liệu: {name}", type="positive")
             file_select.on_value_change(update_conv_label)
 
         # Chat được tích hợp ngay trên trang chủ
-        chat_log = ui.column().classes("gap-2 h-80 overflow-auto border rounded p-3 bg-gray-50 w-full")
-        msg_input = ui.input("Nhập câu hỏi...").classes("w-full")
-        send_btn = ui.button("Gửi", color="primary")
+        # Container với flex layout: chat log chiếm phần còn lại, input fixed ở bottom
+        msg_input = None
+        send_btn = None
+        
+        with ui.column().classes("w-full gap-2").style("display: flex; flex-direction: column; height: calc(100vh - 200px); min-height: 500px"):
+            chat_log = ui.column().classes("gap-2 flex-1 overflow-auto border rounded p-3 bg-gray-50 w-full").style("display: flex; flex-direction: column; min-height: 0")
+            
+            def format_text(text: str) -> str:
+                """Format text: **text** thành <strong>text</strong>"""
+                import re
+                # Thay **text** thành <strong>text</strong>
+                formatted = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', text)
+                return formatted
 
-        def add_message(role: str, text: str):
-            with chat_log:
-                if role == "user":
-                    ui.chat_message(text, name="Bạn").props("sent").classes("q-message-text q-message-text--sent justify-end")
-                else:
-                    ui.chat_message(text, name="Assistant")
+            def add_message(role: str, text: str):
+                with chat_log:
+                    if role == "user":
+                        msg = ui.chat_message(text, name="Bạn").props("sent")
+                        msg.classes("q-message-text q-message-text--sent justify-end")
+                        msg.style("height: fit-content; align-self: flex-end; margin-left: auto")
+                    else:
+                        # Format text với bold cho **text** và dùng chat_message
+                        formatted_text = format_text(text)
+                        msg = ui.chat_message("", name="Assistant")
+                        # Set HTML content vào message text
+                        with msg:
+                            ui.html(formatted_text)
 
-        async def ensure_chat_session():
-            if not session_state.chat_session_id and session_state.session_id:
-                res = await asyncio.to_thread(
-                    api_create_chat_session, session_state.session_id
-                )
-                if res.get("success"):
-                    session_state.chat_session_id = res.get("chat_session_id")
+            async def ensure_chat_session():
+                if not session_state.chat_session_id and session_state.session_id:
+                    res = await asyncio.to_thread(
+                        api_create_chat_session, session_state.session_id
+                    )
+                    if res.get("success"):
+                        session_state.chat_session_id = res.get("chat_session_id")
 
-        async def send():
-            message = (msg_input.value or "").strip()
-            if not message:
-                return
-            if not require_login():
-                return
-            await ensure_chat_session()
-            add_message("user", message)
-            selected = (file_select.value if file_select else None) or None
-            msg_input.props("disable")
-            send_btn.text = "Đang tìm kiếm câu trả lời"
-            send_btn.props("loading")
-            with chat_log:
-                pending = ui.chat_message("Đang trả lời...", name="Assistant").classes("opacity-70 italic")
-            try:
-                resp = await asyncio.to_thread(
-                    api_chat_send,
-                    message,
-                    session_state.session_id,
-                    selected_file=selected,
-                    chat_session_id=session_state.chat_session_id,
-                )
-                print("chat_response_home:", resp)  # debug log
-                if resp.get("success"):
-                    bot = resp.get("response", "Không có phản hồi")
-                    session_state.chat_session_id = resp.get("chat_session_id", session_state.chat_session_id)
-                    pending.delete()
-                    add_message("assistant", bot)
-                    ui.notify("Đã nhận câu trả lời", type="positive")
-                else:
-                    err = resp.get("message") or resp.get("response") or "Lỗi khi gửi tin nhắn"
-                    notify_error(err)
-                    pending.delete()
-                    add_message("assistant", err)
-            finally:
-                msg_input.value = ""
-                msg_input.props(remove="disable")
-                send_btn.text = "Gửi"
-                send_btn.props(remove="loading")
+            async def send():
+                message = (msg_input.value or "").strip()
+                if not message:
+                    return
+                if not require_login():
+                    return
+                await ensure_chat_session()
+                add_message("user", message)
+                selected = file_select.value if file_select else None
+                # Nếu chọn "Tất cả" hoặc rỗng thì gửi None
+                if selected == "Tất cả" or not selected:
+                    selected = None
+                msg_input.props("disable")
+                send_btn.text = "Đang tìm kiếm câu trả lời"
+                send_btn.props("loading")
+                with chat_log:
+                    pending = ui.chat_message("Đang trả lời...", name="Assistant").classes("opacity-70 italic")
+                try:
+                    resp = await asyncio.to_thread(
+                        api_chat_send,
+                        message,
+                        session_state.session_id,
+                        selected_file=selected,
+                        chat_session_id=session_state.chat_session_id,
+                    )
+                    print("chat_response_home:", resp)  # debug log
+                    if resp.get("success"):
+                        bot = resp.get("response", "Không có phản hồi")
+                        session_state.chat_session_id = resp.get("chat_session_id", session_state.chat_session_id)
+                        pending.delete()
+                        add_message("assistant", bot)
+                        ui.notify("Đã nhận câu trả lời", type="positive")
+                    else:
+                        err = resp.get("message") or resp.get("response") or "Lỗi khi gửi tin nhắn"
+                        notify_error(err)
+                        pending.delete()
+                        add_message("assistant", err)
+                finally:
+                    msg_input.value = ""
+                    msg_input.props(remove="disable")
+                    send_btn.text = "Gửi"
+                    send_btn.props(remove="loading")
 
-        with ui.row().classes("w-full items-center gap-2 mt-2"):
-            msg_input.props("outlined clearable").classes("flex-1")
-            send_btn.on_click(send)
+            # Input row fixed ở bottom
+            with ui.row().classes("w-full items-stretch gap-2 shrink-0"):
+                msg_input = ui.input("Nhập câu hỏi...").props("outlined clearable").classes("flex-1")
+                send_btn = ui.button("Gửi", color="primary", on_click=send).style("width: 60px; min-width: 60px; height: 56px; min-height: 56px")
 
     render_shell(include_file_select=True, content_builder=build_content)
 
@@ -411,16 +464,17 @@ def login_page():
     with ui.row().classes("w-full min-h-screen items-center justify-center bg-gray-50"):
         with ui.column().classes("items-center justify-center gap-4 w-full max-w-md"):
             ui.markdown("## Đăng nhập").classes("self-center")
-            with ui.card().classes("gap-3 w-full p-6 shadow-md"):
+            with ui.card().classes("gap-3 w-full p-6 shadow-md").style("border: 1px solid #ccc"):
                 email = ui.input("Email").classes("w-full")
                 password = ui.input("Mật khẩu", password=True).classes("w-full")
+                with ui.column().classes("w-full items-center gap-2"):
+                    ui.link("Chưa có tài khoản? Đăng ký", "/register")
+                    ui.link("Quên mật khẩu?", "/forgot-password")
                 ui.button(
                     "Đăng nhập",
                     color="primary",
                     on_click=lambda: handle_login(email.value, password.value),
                 ).classes("w-full")
-                ui.link("Quên mật khẩu?", "/forgot-password")
-                ui.link("Chưa có tài khoản? Đăng ký", "/register")
 
 
 @ui.page("/register")
@@ -429,7 +483,7 @@ def register_page():
     with ui.row().classes("w-full min-h-screen items-center justify-center bg-gray-50"):
         with ui.column().classes("items-center justify-center gap-4 w-full max-w-md"):
             ui.markdown("## Đăng ký").classes("self-center")
-            with ui.card().classes("gap-3 w-full p-6 shadow-md"):
+            with ui.card().classes("gap-3 w-full p-6 shadow-md").style("border: 1px solid #ccc"):
                 username = ui.input("Tên đăng nhập").classes("w-full")
                 email = ui.input("Email").classes("w-full")
                 password = ui.input("Mật khẩu", password=True).classes("w-full")
@@ -439,7 +493,8 @@ def register_page():
                     color="primary",
                     on_click=lambda: handle_register(username.value, email.value, password.value, confirm.value),
                 ).classes("w-full")
-                ui.link("Đã có tài khoản? Đăng nhập", "/login")
+                with ui.column().classes("w-full items-center"):
+                    ui.link("Đã có tài khoản? Đăng nhập", "/login")
 
 
 @ui.page("/forgot-password")
@@ -488,6 +543,8 @@ def reset_page():
 
 @ui.page("/documents")
 def documents_page():
+    if not require_auth():
+        return
     render_navbar()
     ui.markdown("## Quản lý tài liệu")
 
@@ -535,16 +592,17 @@ def documents_page():
 
 @ui.page("/chat")
 def chat_page():
+    if not require_auth():
+        return
     # Trang chat đã được gộp vào trang '/', giữ route để tránh 404
     ui.label("Chat hiện đã gộp vào trang Trang chủ. Vui lòng quay lại trang /").classes("p-4")
 
 
 @ui.page("/profile")
 def profile_page():
-    render_navbar()
-    if not session_state.is_logged_in:
-        ui.markdown("Vui lòng đăng nhập.").classes("text-red-500")
+    if not require_auth():
         return
+    render_navbar()
     user = session_state.user or {}
     ui.markdown(
         f"""
