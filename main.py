@@ -37,7 +37,33 @@ ui.add_head_html("""
 <style>
 .nicegui-content{padding:0!important;}
 .q-message-text strong { font-weight: bold; }
+.math-formula {
+    font-family: 'Times New Roman', serif;
+    font-style: italic;
+    margin: 0.5em 0;
+    padding: 0.5em;
+    background: #f5f5f5;
+    border-radius: 4px;
+    white-space: pre-wrap;
+    font-size: 1.1em;
+}
+blockquote {
+    border-left: 3px solid #ccc;
+    padding-left: 1em;
+    margin: 0.5em 0;
+    color: #666;
+}
 </style>
+<script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+<script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<script>
+window.MathJax = {
+    tex: {
+        inlineMath: [['$', '$'], ['\\(', '\\)']],
+        displayMath: [['$$', '$$'], ['\\[', '\\]']]
+    }
+};
+</script>
 """, shared=True)
 
 class SessionState:
@@ -47,6 +73,7 @@ class SessionState:
         self.user: Optional[dict] = None
         self.selected_file: Optional[str] = None
         self.chat_session_id: Optional[str] = None
+        self.pending_load_history: Optional[str] = None  # Chat session ID cần load
 
     @property
     def is_logged_in(self) -> bool:
@@ -97,7 +124,6 @@ def clear_session_storage():
     for key in ("session_id", "access_token", "user"):
         user_store.pop(key, None)
 
-
 def restore_session_from_storage():
     """Khôi phục session từ local storage nếu còn hợp lệ."""
     # Nếu đã có session thì không cần restore
@@ -120,10 +146,6 @@ def restore_session_from_storage():
     clear_session_storage()
     return False
 
-
-# -------------------------
-# UI helpers
-# -------------------------
 def notify_success(msg: str):
     ui.notify(msg, type="positive")
 
@@ -138,15 +160,11 @@ def require_login() -> bool:
         return False
     return True
 
-
 def require_auth():
     """Kiểm tra đăng nhập và redirect về /login nếu chưa đăng nhập."""
-    # Khôi phục session từ storage
     restore_session_from_storage()
     
-    # Kiểm tra nếu chưa đăng nhập
     if not session_state.is_logged_in:
-        # Sử dụng JavaScript để redirect đảm bảo hoạt động
         ui.add_head_html(
             '<script>window.location.href = "/login";</script>',
             shared=False
@@ -155,10 +173,6 @@ def require_auth():
         return False
     return True
 
-
-# -------------------------
-# Data helpers
-# -------------------------
 def refresh_files_list() -> Tuple[str, List[str]]:
     result = api_get_files(session_state.session_id)
     if not result.get("success") or result.get("total_files", 0) == 0:
@@ -181,11 +195,8 @@ async def upload_temp_files(upload_event) -> bool:
     if not require_login():
         return False
 
-    # NiceGUI upload event - có thể là UploadEvent object hoặc list
-    # NiceGUI có thể truyền event object hoặc trực tiếp là file objects
     incoming = []
     
-    # Debug: In ra toàn bộ thông tin về upload_event
     logger.info(f"=== UPLOAD EVENT DEBUG ===")
     logger.info(f"Type: {type(upload_event)}")
     if hasattr(upload_event, "__dict__"):
@@ -398,10 +409,6 @@ async def upload_temp_files(upload_event) -> bool:
             except Exception as e:
                 logger.warning(f"Không thể xóa temp file {t.path}: {e}")
 
-
-# -------------------------
-# Auth handlers
-# -------------------------
 def handle_login(email: str, password: str):
     email = (email or "").strip()
     password = (password or "").strip()
@@ -510,10 +517,8 @@ def render_sidebar(include_file_select: bool = True):
             """Xử lý upload và refresh sau khi thành công"""
             try:
                 result = await upload_temp_files(e)
-                if result:  # Upload thành công
-                    # Đợi một chút để đảm bảo server đã xử lý xong và lưu vào DB
+                if result:      # Upload thành công
                     await asyncio.sleep(1.0)
-                    # Retry refresh với timeout ngắn hơn
                     max_retries = 5
                     for retry in range(max_retries):
                         new_files = refresh_lists()
@@ -541,13 +546,59 @@ def render_sidebar(include_file_select: bool = True):
             else:
                 file_select = None
             
-            # Upload component nằm dưới Select với khoảng cách 16px
             ui.upload(
                 label="Upload tài liệu PDF",
                 multiple=True,
                 on_upload=handle_upload,
             ).props("color=primary flat no-thumbnails").classes("w-full").style("margin-top: 16px")
 
+        ui.separator()
+        
+        # Section lịch sử chat trong sidebar
+        with ui.card().classes("w-full shadow-none border p-3 gap-2"):
+            ui.label("📜 Lịch sử chat").classes("text-sm font-semibold mb-2")
+            chat_history_sidebar = ui.select(
+                options=[],
+                label="Chọn cuộc trò chuyện",
+                value=None
+            ).props("clearable dense").classes("w-full").style("font-size: 0.85rem")
+            
+            def refresh_sidebar_history():
+                """Refresh chat history trong sidebar"""
+                try:
+                    sessions_result = api_get_chat_sessions(session_state.session_id)
+                    if sessions_result.get("success"):
+                        sessions = sessions_result.get("sessions", [])
+                        options = {}
+                        for session in sessions:
+                            session_id = session.get("session_id", "")
+                            title = session.get("title", "Chat không có tiêu đề")
+                            created_at = session.get("created_at", "")
+                            display_text = f"{title[:25]}..." if len(title) > 25 else title
+                            if created_at:
+                                try:
+                                    from datetime import datetime
+                                    if isinstance(created_at, str):
+                                        dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                                        display_text += f" ({dt.strftime('%d/%m %H:%M')})"
+                                except:
+                                    pass
+                            options[session_id] = display_text
+                        chat_history_sidebar.options = options
+                except Exception as e:
+                    logger.error(f"Error refreshing sidebar history: {e}")
+            
+            def on_sidebar_history_change(e):
+                selected_session_id = e.value
+                if selected_session_id:
+                    # Set flag để load history khi trang load
+                    session_state.pending_load_history = selected_session_id
+                    # Navigate về trang chủ
+                    ui.navigate.to("/")
+            
+            chat_history_sidebar.on_value_change(on_sidebar_history_change)
+            refresh_sidebar_history()
+        
         ui.separator()
         with ui.card().classes("w-full shadow-none border p-3 gap-2"):
             if session_state.is_logged_in and session_state.user:
@@ -560,10 +611,6 @@ def render_sidebar(include_file_select: bool = True):
 
     return file_select
 
-
-# -------------------------
-# Pages
-# -------------------------
 def render_shell(include_file_select: bool, content_builder):
     """Khung layout 1/4 sidebar - 3/4 main-content."""
     with ui.row().classes("w-full min-h-screen"):
@@ -580,26 +627,9 @@ def home_page():
         return
     
     def build_content(file_select):
-        # Header cuộc trò chuyện với button xem PDF
+        # Header cuộc trò chuyện
         with ui.row().classes("w-full items-center justify-between mb-4"):
             conv_label = ui.label("Trò chuyện với: Tất cả tài liệu").classes("text-xl font-semibold")
-            
-            # Button xem PDF
-            def view_selected_pdf():
-                selected = file_select.value if file_select else None
-                if not selected or selected == "Tất cả":
-                    notify_error("Vui lòng chọn một tài liệu cụ thể để xem")
-                    return
-                
-                view_result = api_view_file(selected, session_state.session_id)
-                if view_result.get("success"):
-                    url = view_result.get("url")
-                    # Mở PDF trong tab mới
-                    ui.run_javascript(f'window.open("{url}", "_blank")')
-                else:
-                    notify_error(view_result.get("message", "Không thể xem file"))
-            
-            ui.button("👁️ Xem PDF", on_click=view_selected_pdf).props("outline").classes("justify-end")
         
         if file_select:
             def update_conv_label(e):
@@ -616,25 +646,168 @@ def home_page():
         with ui.column().classes("w-full gap-2").style("display: flex; flex-direction: column; height: 85vh"):
             chat_log = ui.column().classes("gap-2 flex-1 overflow-auto border rounded p-3 bg-gray-50 w-full").style("display: flex; flex-direction: column; min-height: 0")
             
+            # Hàm load chat history
+            def load_chat_history(chat_session_id: str):
+                """Load lịch sử chat từ một session"""
+                if not chat_session_id:
+                    return
+                
+                # Clear chat log hiện tại
+                chat_log.clear()
+                
+                # Lấy lịch sử chat
+                history_result = api_get_chat_history(chat_session_id, session_state.session_id)
+                
+                if history_result.get("success"):
+                    messages = history_result.get("messages", [])
+                    if messages:
+                        for msg in messages:
+                            role = msg.get("role", "assistant")
+                            content = msg.get("content", "")
+                            if content:
+                                add_message(role, content)
+                        # Set chat_session_id hiện tại
+                        session_state.chat_session_id = chat_session_id
+                        ui.notify(f"Đã tải {len(messages)} tin nhắn từ lịch sử", type="positive")
+                    else:
+                        ui.notify("Không có tin nhắn trong session này", type="info")
+                else:
+                    notify_error(history_result.get("message", "Không thể tải lịch sử chat"))
+            
+            # Kiểm tra nếu có pending load history từ sidebar
+            if session_state.pending_load_history:
+                load_session_id = session_state.pending_load_history
+                session_state.pending_load_history = None
+                # Đợi một chút để UI render xong
+                ui.timer(0.3, lambda: load_chat_history(load_session_id), once=True)
+            
             def format_text(text: str) -> str:
-                """Format text: 
-                - **text** thành <strong>text</strong> và đảm bảo tiêu đề nằm riêng 1 dòng
-                - Các dòng bắt đầu bằng "-" nằm riêng mỗi dòng
-                """
+                """Format text với markdown và MathJax support"""
                 import re
-                formatted = text.replace('\n', '<br>')
+                import html
                 
-                def replace_bold(match):
-                    bold_text = match.group(1)
-                    return f'<br><strong>{bold_text}</strong><br>'
+                text = re.sub(r'strong>', '<strong>', text)
+                text = re.sub(r'</strong>', '</strong>', text)
                 
-                formatted = re.sub(r'\*\*(.+?)\*\*', replace_bold, formatted)
+                lines = text.split('\n')
+                formatted_lines = []
+                in_blockquote = False
+                in_math_formula = False
+                math_lines = []
                 
-                formatted = re.sub(r'(?<!<br>)\s+-\s+', r'<br>- ', formatted)
+                math_chars = ['∑', '∫', '=', '≤', '≥', '≠', '±', '×', '÷', 'α', 'β', 'γ', 'δ', 'ε', 'θ', 'λ', 'μ', 'π', 'σ', 'φ', 'ω', 'Δ', 'Ω', '∞']
                 
-                formatted = re.sub(r'<br><br>+', r'<br>', formatted)
+                for i, line in enumerate(lines):
+                    stripped = line.strip()
+                    
+                    # Kiểm tra nếu là dòng bắt đầu bằng >
+                    if stripped.startswith('>'):
+                        content = stripped[1:].strip()
+                        
+                        # Kiểm tra nếu là công thức toán học
+                        is_math = any(char in content for char in math_chars) or \
+                                 re.search(r'[a-z]_[a-z]', content) or \
+                                 re.search(r'[A-Z][a-z]+[A-Z]', content) or \
+                                 (i > 0 and lines[i-1].strip().startswith('>') and in_math_formula)
+                        
+                        if is_math:
+                            # Bắt đầu công thức toán học
+                            if not in_math_formula:
+                                in_math_formula = True
+                                math_lines = []
+                            math_lines.append(content)
+                        else:
+                            # Kết thúc công thức toán học nếu đang trong công thức
+                            if in_math_formula:
+                                # Render công thức
+                                math_content = '\n'.join(math_lines)
+                                formatted_lines.append(f'<div class="math-formula">{html.escape(math_content)}</div>')
+                                in_math_formula = False
+                                math_lines = []
+                            
+                            # Xử lý blockquote thông thường
+                            if not in_blockquote:
+                                formatted_lines.append('<blockquote>')
+                                in_blockquote = True
+                            formatted_lines.append(f'<p>{html.escape(content)}</p>')
+                        continue
+                    else:
+                        # Kết thúc blockquote hoặc công thức
+                        if in_math_formula:
+                            math_content = '\n'.join(math_lines)
+                            formatted_lines.append(f'<div class="math-formula">{html.escape(math_content)}</div>')
+                            in_math_formula = False
+                            math_lines = []
+                        
+                        if in_blockquote:
+                            formatted_lines.append('</blockquote>')
+                            in_blockquote = False
+                        
+                        formatted_lines.append(line)
                 
-                formatted = formatted.strip('<br>')
+                # Đóng các blockquote/công thức còn lại
+                if in_math_formula:
+                    math_content = '\n'.join(math_lines)
+                    formatted_lines.append(f'<div class="math-formula">{html.escape(math_content)}</div>')
+                if in_blockquote:
+                    formatted_lines.append('</blockquote>')
+                
+                text = '\n'.join(formatted_lines)
+                
+                # Kiểm tra xem text đã có HTML tags chưa (từ LLM response)
+                # Nếu đã có HTML tags hợp lệ, không cần xử lý markdown nữa
+                has_html_tags = bool(re.search(r'<(strong|em|ul|li|h[1-6]|blockquote|div|p|code)[^>]*>', text, re.IGNORECASE))
+                
+                if not has_html_tags:
+                    # Chỉ xử lý markdown nếu chưa có HTML tags
+                    def replace_bold(match):
+                        bold_text = match.group(1)
+                        # Nếu đã có <strong> tag thì bỏ qua
+                        if '<strong>' in bold_text or '</strong>' in bold_text:
+                            return match.group(0)
+                        return f'<strong>{html.escape(bold_text)}</strong>'
+                    
+                    text = re.sub(r'\*\*([^*]+?)\*\*', replace_bold, text)
+                    
+                    text = re.sub(r'(?<!\*)\*([^*]+?)\*(?!\*)', r'<em>\1</em>', text)
+                    
+                    text = re.sub(r'`([^`]+?)`', r'<code style="background: #f4f4f4; padding: 2px 6px; border-radius: 3px; font-family: monospace;">\1</code>', text)
+                    
+                    text = re.sub(r'^-\s+(.+)$', r'<li style="margin: 0.3em 0;">\1</li>', text, flags=re.MULTILINE)
+                    
+                    text = re.sub(r'(<li[^>]*>.*?</li>(?:\s*<li[^>]*>.*?</li>)*)', r'<ul style="margin: 0.5em 0; padding-left: 1.5em;">\1</ul>', text, flags=re.DOTALL)
+                    
+                    text = re.sub(r'^###\s+(.+)$', r'<h3 style="font-size: 1.2em; font-weight: bold; margin: 1em 0 0.5em 0; color: #333;">\1</h3>', text, flags=re.MULTILINE)
+                    text = re.sub(r'^##\s+(.+)$', r'<h2 style="font-size: 1.4em; font-weight: bold; margin: 1.2em 0 0.6em 0; color: #222;">\1</h2>', text, flags=re.MULTILINE)
+                    text = re.sub(r'^#\s+(.+)$', r'<h1 style="font-size: 1.6em; font-weight: bold; margin: 1.5em 0 0.8em 0; color: #111;">\1</h1>', text, flags=re.MULTILINE)
+                
+                paragraphs = re.split(r'\n\s*\n', text)
+                formatted_paragraphs = []
+                for para in paragraphs:
+                    para = para.strip()
+                    if not para:
+                        continue
+                    
+                    # Kiểm tra nếu paragraph đã chứa HTML tags hợp lệ
+                    has_html_tags = bool(re.search(r'<(strong|em|ul|li|h[1-6]|blockquote|div|p|code)[^>]*>', para, re.IGNORECASE))
+                    
+                    if has_html_tags:
+                        # Nếu đã có HTML tags, chỉ cần thêm vào (không escape)
+                        formatted_paragraphs.append(para)
+                    elif para.startswith('<') and (para.startswith('<h') or para.startswith('<ul') or para.startswith('<blockquote') or para.startswith('<div')):
+                        # Nếu là HTML block element, giữ nguyên
+                        formatted_paragraphs.append(para)
+                    else:
+                        # Nếu là plain text, escape và wrap trong <p>
+                        para_escaped = html.escape(para)
+                        # Thay \n thành <br> trong paragraph
+                        para_escaped = para_escaped.replace('\n', '<br>')
+                        formatted_paragraphs.append(f'<p style="margin: 0.5em 0; line-height: 1.6;">{para_escaped}</p>')
+                
+                formatted = '\n'.join(formatted_paragraphs)
+                
+                # Clean up multiple <br> tags
+                formatted = re.sub(r'<br>\s*<br>+', '<br>', formatted)
                 
                 return formatted
 
@@ -691,6 +864,9 @@ def home_page():
                         session_state.chat_session_id = resp.get("chat_session_id", session_state.chat_session_id)
                         pending.delete()
                         add_message("assistant", bot)
+                        # Refresh chat history trong sidebar sau khi có tin nhắn mới
+                        if hasattr(session_state, 'refresh_sidebar_history'):
+                            session_state.refresh_sidebar_history()
                         ui.notify("Đã nhận câu trả lời", type="positive")
                     else:
                         err = resp.get("message") or resp.get("response") or "Lỗi khi gửi tin nhắn"

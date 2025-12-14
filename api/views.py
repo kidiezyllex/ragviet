@@ -326,7 +326,6 @@ class LoginView(APIView):
                 status=status.HTTP_401_UNAUTHORIZED
             )
 
-
 class RegisterView(APIView):
     """API endpoint cho đăng ký"""
     
@@ -377,7 +376,6 @@ class RegisterView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-
 class LogoutView(APIView):
     """API endpoint cho đăng xuất"""
     
@@ -392,7 +390,6 @@ class LogoutView(APIView):
             "message": "Đã đăng xuất"
         }, status=status.HTTP_200_OK)
         return clear_auth_cookie(resp)
-
 
 class ForgotPasswordView(APIView):
     """API endpoint cho quên mật khẩu"""
@@ -417,7 +414,6 @@ class ForgotPasswordView(APIView):
                 {"success": False, "message": result["message"]},
                 status=status.HTTP_400_BAD_REQUEST
             )
-
 
 class ResetPasswordView(APIView):
     """API endpoint cho reset mật khẩu"""
@@ -451,7 +447,6 @@ class ResetPasswordView(APIView):
                 {"success": False, "message": result['message']},
                 status=status.HTTP_400_BAD_REQUEST
             )
-
 
 class VerifySessionView(APIView):
     """API endpoint để verify session"""
@@ -583,7 +578,6 @@ class ChatSendView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
-
 class ChatSessionsView(APIView):
     """API endpoint để lấy danh sách chat sessions"""
     
@@ -633,7 +627,6 @@ class ChatSessionsView(APIView):
             "sessions": result_sessions
         }, status=status.HTTP_200_OK)
 
-
 class CreateChatSessionView(APIView):
     """API endpoint để tạo chat session mới"""
     
@@ -666,7 +659,6 @@ class CreateChatSessionView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
-
 class ChatHistoryView(APIView):
     """API endpoint để lấy lịch sử chat của một session"""
     
@@ -687,11 +679,16 @@ class ChatHistoryView(APIView):
             )
         
         messages = database.get_session_messages(session_id)
+        formatted_messages = []
+        for msg in messages:
+            formatted_messages.append({
+                "role": "user" if msg.get("message") else "assistant",
+                "content": msg.get("message") or msg.get("response", "")
+            })
         return Response({
             "success": True,
-            "messages": messages
+            "messages": formatted_messages
         }, status=status.HTTP_200_OK)
-
 
 class FileUploadView(APIView):
     """API endpoint để upload file PDF lên Cloudinary"""
@@ -936,7 +933,6 @@ class FileUploadView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
-
 class FileListView(APIView):
     """API endpoint để lấy danh sách file đã upload của user"""
     
@@ -1033,7 +1029,6 @@ class FileDeleteView(APIView):
             import cloudinary
             import cloudinary.uploader
             
-            # Cấu hình và kiểm tra Cloudinary credentials
             success, error_msg = configure_cloudinary()
             if not success:
                 return Response(
@@ -1041,7 +1036,6 @@ class FileDeleteView(APIView):
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR
                 )
             
-            # Xóa từ Cloudinary
             try:
                 cloudinary_public_id = file_info.get('cloudinary_public_id')
                 if cloudinary_public_id:
@@ -1050,10 +1044,8 @@ class FileDeleteView(APIView):
             except Exception as cloudinary_error:
                 logger.warning(f"Không thể xóa file từ Cloudinary: {str(cloudinary_error)}")
             
-            # Xóa từ vector store (chỉ xóa chunks của user này)
             vector_store.delete_by_filename(filename, user_id=user_id)
             
-            # Xóa thông tin từ database
             database.delete_user_file(user_id, filename)
             
             return Response({
@@ -1067,7 +1059,6 @@ class FileDeleteView(APIView):
                 {"success": False, "message": f"Lỗi: {str(e)}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-
 
 class FileClearAllView(APIView):
     """API endpoint để xóa toàn bộ tài liệu của user"""
@@ -1094,7 +1085,6 @@ class FileClearAllView(APIView):
             import cloudinary
             import cloudinary.uploader
             
-            # Cấu hình và kiểm tra Cloudinary credentials
             success, error_msg = configure_cloudinary()
             if not success:
                 return Response(
@@ -1102,10 +1092,8 @@ class FileClearAllView(APIView):
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR
                 )
             
-            # Lấy tất cả files của user
             user_files = database.get_user_files(user_id)
             
-            # Xóa từng file trên Cloudinary
             for file_info in user_files:
                 try:
                     cloudinary_public_id = file_info.get('cloudinary_public_id')
@@ -1114,10 +1102,8 @@ class FileClearAllView(APIView):
                 except Exception as e:
                     logger.warning(f"Không thể xóa {file_info['filename']} từ Cloudinary: {str(e)}")
                 
-                # Xóa từ vector store
                 vector_store.delete_by_filename(file_info['filename'], user_id=user_id)
             
-            # Xóa tất cả records từ database
             for file_info in user_files:
                 database.delete_user_file(user_id, file_info['filename'])
             
@@ -1132,7 +1118,6 @@ class FileClearAllView(APIView):
                 {"success": False, "message": f"Lỗi: {str(e)}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-
 
 class FileViewView(APIView):
     """API endpoint để lấy URL xem PDF từ Cloudinary"""
@@ -1175,4 +1160,3 @@ class FileViewView(APIView):
             "url": cloudinary_url,
             "filename": filename
         }, status=status.HTTP_200_OK)
-
