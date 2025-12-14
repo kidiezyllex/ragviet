@@ -35,6 +35,26 @@ except Exception as e:
     reranker = None
 
 
+def configure_cloudinary():
+    """
+    Cấu hình Cloudinary và kiểm tra credentials
+    Returns: (success: bool, error_message: str)
+    """
+    if not settings.CLOUDINARY_CLOUD_NAME or not settings.CLOUDINARY_API_KEY or not settings.CLOUDINARY_API_SECRET:
+        return False, "Cloudinary credentials chưa được cấu hình. Vui lòng thêm CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, và CLOUDINARY_API_SECRET vào file .env"
+    
+    try:
+        import cloudinary
+        cloudinary.config(
+            cloud_name=settings.CLOUDINARY_CLOUD_NAME,
+            api_key=settings.CLOUDINARY_API_KEY,
+            api_secret=settings.CLOUDINARY_API_SECRET
+        )
+        return True, None
+    except Exception as e:
+        return False, f"Lỗi khi cấu hình Cloudinary: {str(e)}"
+
+
 def get_llm_client():
     """Khởi tạo LLM client (Groq)"""
     if os.getenv("GROQ_API_KEY"):
@@ -706,12 +726,13 @@ class FileUploadView(APIView):
             import cloudinary.uploader
             import tempfile
             
-            # Cấu hình Cloudinary
-            cloudinary.config(
-                cloud_name=settings.CLOUDINARY_CLOUD_NAME,
-                api_key=settings.CLOUDINARY_API_KEY,
-                api_secret=settings.CLOUDINARY_API_SECRET
-            )
+            # Cấu hình và kiểm tra Cloudinary credentials
+            success, error_msg = configure_cloudinary()
+            if not success:
+                return Response(
+                    {"success": False, "message": error_msg},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
             
             pdf_paths = []
             uploaded_files_info = []
@@ -732,7 +753,25 @@ class FileUploadView(APIView):
                 with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
                     for chunk in file.chunks():
                         tmp_file.write(chunk)
+                    tmp_file.flush()  # Đảm bảo dữ liệu được ghi vào disk
+                    os.fsync(tmp_file.fileno())  # Đồng bộ với disk
                     tmp_path = tmp_file.name
+                
+                # Kiểm tra file đã được tạo và có nội dung
+                if not os.path.exists(tmp_path):
+                    return Response(
+                        {"success": False, "message": f"Không thể tạo file tạm cho {filename}"},
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                    )
+                
+                file_size = os.path.getsize(tmp_path)
+                if file_size == 0:
+                    return Response(
+                        {"success": False, "message": f"File {filename} rỗng hoặc bị hỏng"},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                
+                logger.info(f"Đã tạo file tạm {tmp_path} cho {filename} (size: {file_size} bytes)")
                 
                 # Upload lên Cloudinary
                 try:
@@ -777,9 +816,28 @@ class FileUploadView(APIView):
                 filename = file_info['filename']
                 tmp_path = file_info['tmp_path']
                 
+                # Kiểm tra file tạm có tồn tại và có thể đọc được không
+                if not os.path.exists(tmp_path):
+                    logger.error(f"File tạm không tồn tại: {tmp_path}")
+                    pages_info[filename] = 0
+                    continue
+                
+                # Kiểm tra kích thước file
+                file_size = os.path.getsize(tmp_path)
+                if file_size == 0:
+                    logger.error(f"File tạm rỗng: {tmp_path}")
+                    pages_info[filename] = 0
+                    try:
+                        os.remove(tmp_path)
+                    except:
+                        pass
+                    continue
+                
+                logger.info(f"Đang xử lý PDF {filename} từ {tmp_path} (size: {file_size} bytes)")
+                
                 try:
                     chunks, pages_dict = pdf_processor.process_multiple_pdfs([tmp_path])
-                    if chunks:
+                    if chunks and len(chunks) > 0:
                         # Thêm user_id vào metadata của mỗi chunk
                         for chunk in chunks:
                             chunk['metadata']['user_id'] = user_id
@@ -789,16 +847,21 @@ class FileUploadView(APIView):
                             # Lấy số trang từ dict (có thể có nhiều files nhưng chúng ta chỉ xử lý 1 file mỗi lần)
                             page_count = list(pages_dict.values())[0] if pages_dict else 0
                             pages_info[filename] = page_count
+                            logger.info(f"Đã xử lý {filename}: {len(chunks)} chunks, {page_count} trang")
                         else:
                             pages_info[filename] = 0
+                            logger.warning(f"Không có pages_dict cho {filename}")
+                    else:
+                        logger.warning(f"Không tạo được chunks từ {filename} (0 chunks)")
+                        pages_info[filename] = 0
                     
                     # Xóa file tạm sau khi xử lý
                     try:
                         os.remove(tmp_path)
-                    except:
-                        pass
+                    except Exception as e:
+                        logger.warning(f"Không thể xóa file tạm {tmp_path}: {e}")
                 except Exception as e:
-                    logger.error(f"Lỗi khi xử lý PDF {filename}: {str(e)}")
+                    logger.error(f"Lỗi khi xử lý PDF {filename}: {str(e)}", exc_info=True)
                     pages_info[filename] = 0
                     # Xóa file tạm
                     try:
@@ -807,6 +870,24 @@ class FileUploadView(APIView):
                         pass
             
             if not all_chunks:
+                # Kiểm tra xem có file nào được upload không
+                if not uploaded_files_info:
+                    return Response(
+                        {"success": False, "message": "Không có file nào được upload"},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                
+                # Nếu có file nhưng không tạo được chunks, có thể là PDF bị lỗi hoặc không có text
+                error_files = [f['filename'] for f in uploaded_files_info if pages_info.get(f['filename'], 0) == 0]
+                if error_files:
+                    return Response(
+                        {
+                            "success": False, 
+                            "message": f"Không thể trích xuất văn bản từ các file PDF: {', '.join(error_files)}. Có thể file PDF bị lỗi, bị mã hóa, hoặc không có nội dung text (chỉ có hình ảnh)."
+                        },
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                
                 return Response(
                     {"success": False, "message": "Không thể trích xuất văn bản từ các file PDF"},
                     status=status.HTTP_400_BAD_REQUEST
@@ -948,12 +1029,13 @@ class FileDeleteView(APIView):
             import cloudinary
             import cloudinary.uploader
             
-            # Cấu hình Cloudinary
-            cloudinary.config(
-                cloud_name=settings.CLOUDINARY_CLOUD_NAME,
-                api_key=settings.CLOUDINARY_API_KEY,
-                api_secret=settings.CLOUDINARY_API_SECRET
-            )
+            # Cấu hình và kiểm tra Cloudinary credentials
+            success, error_msg = configure_cloudinary()
+            if not success:
+                return Response(
+                    {"success": False, "message": error_msg},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
             
             # Xóa từ Cloudinary
             try:
@@ -1008,12 +1090,13 @@ class FileClearAllView(APIView):
             import cloudinary
             import cloudinary.uploader
             
-            # Cấu hình Cloudinary
-            cloudinary.config(
-                cloud_name=settings.CLOUDINARY_CLOUD_NAME,
-                api_key=settings.CLOUDINARY_API_KEY,
-                api_secret=settings.CLOUDINARY_API_SECRET
-            )
+            # Cấu hình và kiểm tra Cloudinary credentials
+            success, error_msg = configure_cloudinary()
+            if not success:
+                return Response(
+                    {"success": False, "message": error_msg},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
             
             # Lấy tất cả files của user
             user_files = database.get_user_files(user_id)

@@ -5,9 +5,10 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv()
-
+# Load .env file từ thư mục BASE_DIR
 BASE_DIR = Path(__file__).resolve().parent
+env_path = BASE_DIR / '.env'
+load_dotenv(dotenv_path=env_path)
 
 SECRET_KEY = os.getenv('DJANGO_SECRET_KEY', 'django-insecure-change-this-in-production')
 
@@ -130,9 +131,20 @@ CORS_ALLOW_HEADERS = [
 MEDIA_ROOT = os.path.join(BASE_DIR, 'pdfs')
 MEDIA_URL = '/media/'
 
-# Cloudinary Configuration
-CLOUDINARY_CLOUD_NAME = os.getenv('CLOUDINARY_CLOUD_NAME', 'drqbhj6ft')
-CLOUDINARY_API_KEY = os.getenv('CLOUDINARY_API_KEY', '916759785977877')
-CLOUDINARY_API_SECRET = os.getenv('CLOUDINARY_API_SECRET', 'PMv5zXCcrlUMLaJgelphZnzwUuc')
-CLOUDINARY_URL = os.getenv('CLOUDINARY_URL', f'cloudinary://{CLOUDINARY_API_KEY}:{CLOUDINARY_API_SECRET}@{CLOUDINARY_CLOUD_NAME}')
+# Cloudinary Configuration - Đọc từ environment variables
+CLOUDINARY_CLOUD_NAME = os.getenv('CLOUDINARY_CLOUD_NAME')
+CLOUDINARY_API_KEY = os.getenv('CLOUDINARY_API_KEY')
+CLOUDINARY_API_SECRET = os.getenv('CLOUDINARY_API_SECRET')
+
+# Xây dựng CLOUDINARY_URL từ các biến môi trường
+if CLOUDINARY_CLOUD_NAME and CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET:
+    CLOUDINARY_URL = os.getenv('CLOUDINARY_URL') or f'cloudinary://{CLOUDINARY_API_KEY}:{CLOUDINARY_API_SECRET}@{CLOUDINARY_CLOUD_NAME}'
+else:
+    CLOUDINARY_URL = os.getenv('CLOUDINARY_URL')
+    if not CLOUDINARY_URL:
+        import warnings
+        warnings.warn(
+            "Cloudinary credentials chưa được cấu hình trong .env file. "
+            "Vui lòng thêm CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, và CLOUDINARY_API_SECRET vào file .env"
+        )
 

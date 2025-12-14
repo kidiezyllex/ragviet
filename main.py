@@ -484,15 +484,6 @@ def render_sidebar(include_file_select: bool = True):
     with ui.column().classes(
         "bg-gray-50 border-r h-screen p-4 gap-3 shrink-0 justify-between"
     ).style("width:25%;max-width:25%;min-width:260px; display: flex; flex-direction: column"):
-        if include_file_select:
-            file_select = ui.select(
-                options=["Tất cả"] + file_names,
-                value="Tất cả",
-                label="Chọn tài liệu để chat",
-            ).props("clearable dense").classes("w-full").style("font-size: 1rem")
-        else:
-            file_select = None
-
         def refresh_lists():
             """Refresh danh sách files và cập nhật dropdown"""
             try:
@@ -534,16 +525,23 @@ def render_sidebar(include_file_select: bool = True):
                 logger.error(f"Error in handle_upload: {ex}", exc_info=True)
                 notify_error(f"Lỗi khi xử lý upload: {ex}")
 
+        # Section chung cho Select và Upload
         with ui.column().classes("gap-3 w-full"):
+            if include_file_select:
+                file_select = ui.select(
+                    options=["Tất cả"] + file_names,
+                    value="Tất cả",
+                    label="Chọn tài liệu để chat",
+                ).props("clearable dense").classes("w-full").style("font-size: 1rem")
+            else:
+                file_select = None
+            
+            # Upload component nằm dưới Select với khoảng cách 16px
             ui.upload(
                 label="Upload tài liệu PDF",
                 multiple=True,
                 on_upload=handle_upload,
-            ).props("color=primary flat no-thumbnails").classes("w-full")
-
-            ui.input(
-                placeholder="Tìm kiếm tài liệu",
-            ).props("dense outlined").classes("w-full")
+            ).props("color=primary flat no-thumbnails").classes("w-full").style("margin-top: 16px")
 
         ui.separator()
         with ui.card().classes("w-full shadow-none border p-3 gap-2"):
