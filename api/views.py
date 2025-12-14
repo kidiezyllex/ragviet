@@ -496,7 +496,16 @@ class ChatSendView(APIView):
                 "chat_session_id": chat_session_id
             }, status=status.HTTP_200_OK)
         
-        stats = vector_store.get_stats()
+        # Lấy user_id nếu có session
+        user = None
+        user_id = None
+        if session_id and auth_manager:
+            user = auth_manager.get_user_from_session(session_id)
+            if user:
+                user_id = user["user_id"]
+        
+        # Lấy stats theo user_id
+        stats = vector_store.get_stats(user_id=user_id)
         if stats["total_chunks"] == 0:
             return Response({
                 "success": True,
@@ -504,9 +513,9 @@ class ChatSendView(APIView):
             }, status=status.HTTP_200_OK)
         
         try:
-            logger.info(f"Đang tìm kiếm câu trả lời cho: {message} (file: {selected_file})")
+            logger.info(f"Đang tìm kiếm câu trả lời cho: {message} (file: {selected_file}, user: {user_id})")
             
-            search_results = vector_store.search(message, top_k=30, filename=selected_file)
+            search_results = vector_store.search(message, top_k=30, filename=selected_file, user_id=user_id)
             
             if not search_results:
                 response = "Không tìm thấy thông tin liên quan trong các tài liệu đã upload."
@@ -665,7 +674,7 @@ class ChatHistoryView(APIView):
 
 
 class FileUploadView(APIView):
-    """API endpoint để upload file PDF"""
+    """API endpoint để upload file PDF lên Cloudinary"""
     parser_classes = [MultiPartParser, FormParser]
     
     def post(self, request):
@@ -684,6 +693,7 @@ class FileUploadView(APIView):
                 status=status.HTTP_401_UNAUTHORIZED
             )
         
+        user_id = user["user_id"]
         files = request.FILES.getlist('files')
         if not files:
             return Response(
@@ -692,8 +702,21 @@ class FileUploadView(APIView):
             )
         
         try:
-            import shutil
+            import cloudinary
+            import cloudinary.uploader
+            import tempfile
+            
+            # Cấu hình Cloudinary
+            cloudinary.config(
+                cloud_name=settings.CLOUDINARY_CLOUD_NAME,
+                api_key=settings.CLOUDINARY_API_KEY,
+                api_secret=settings.CLOUDINARY_API_SECRET
+            )
+            
             pdf_paths = []
+            uploaded_files_info = []
+            
+            # Upload từng file lên Cloudinary và xử lý
             for file in files:
                 if not file.name.endswith('.pdf'):
                     return Response(
@@ -702,13 +725,86 @@ class FileUploadView(APIView):
                     )
                 
                 filename = file.name
-                dest_path = os.path.join(settings.MEDIA_ROOT, filename)
-                with open(dest_path, 'wb+') as destination:
+                # Tạo public_id với user_id để tránh trùng lặp
+                public_id = f"ragviet/{user_id}/{filename.replace('.pdf', '')}"
+                
+                # Lưu file tạm để xử lý
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
                     for chunk in file.chunks():
-                        destination.write(chunk)
-                pdf_paths.append(dest_path)
+                        tmp_file.write(chunk)
+                    tmp_path = tmp_file.name
+                
+                # Upload lên Cloudinary
+                try:
+                    upload_result = cloudinary.uploader.upload(
+                        tmp_path,
+                        resource_type="raw",
+                        public_id=public_id,
+                        folder=f"ragviet/{user_id}",
+                        use_filename=True,
+                        unique_filename=False
+                    )
+                    cloudinary_url = upload_result.get('secure_url') or upload_result.get('url')
+                    cloudinary_public_id = upload_result.get('public_id')
+                    
+                    logger.info(f"Đã upload {filename} lên Cloudinary: {cloudinary_url}")
+                    
+                    # Lưu file tạm để xử lý PDF
+                    pdf_paths.append(tmp_path)
+                    uploaded_files_info.append({
+                        'filename': filename,
+                        'cloudinary_url': cloudinary_url,
+                        'cloudinary_public_id': cloudinary_public_id,
+                        'tmp_path': tmp_path
+                    })
+                except Exception as upload_error:
+                    logger.error(f"Lỗi khi upload lên Cloudinary: {str(upload_error)}")
+                    # Xóa file tạm nếu upload thất bại
+                    try:
+                        os.remove(tmp_path)
+                    except:
+                        pass
+                    return Response(
+                        {"success": False, "message": f"Lỗi khi upload file {filename} lên Cloudinary: {str(upload_error)}"},
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                    )
             
-            all_chunks, pages_info = pdf_processor.process_multiple_pdfs(pdf_paths)
+            # Xử lý PDF để tạo chunks
+            all_chunks = []
+            pages_info = {}
+            
+            for file_info in uploaded_files_info:
+                filename = file_info['filename']
+                tmp_path = file_info['tmp_path']
+                
+                try:
+                    chunks, pages_dict = pdf_processor.process_multiple_pdfs([tmp_path])
+                    if chunks:
+                        # Thêm user_id vào metadata của mỗi chunk
+                        for chunk in chunks:
+                            chunk['metadata']['user_id'] = user_id
+                        all_chunks.extend(chunks)
+                        # pages_dict là dict {filename: num_pages}, lấy giá trị đầu tiên
+                        if pages_dict:
+                            # Lấy số trang từ dict (có thể có nhiều files nhưng chúng ta chỉ xử lý 1 file mỗi lần)
+                            page_count = list(pages_dict.values())[0] if pages_dict else 0
+                            pages_info[filename] = page_count
+                        else:
+                            pages_info[filename] = 0
+                    
+                    # Xóa file tạm sau khi xử lý
+                    try:
+                        os.remove(tmp_path)
+                    except:
+                        pass
+                except Exception as e:
+                    logger.error(f"Lỗi khi xử lý PDF {filename}: {str(e)}")
+                    pages_info[filename] = 0
+                    # Xóa file tạm
+                    try:
+                        os.remove(tmp_path)
+                    except:
+                        pass
             
             if not all_chunks:
                 return Response(
@@ -716,15 +812,34 @@ class FileUploadView(APIView):
                     status=status.HTTP_400_BAD_REQUEST
                 )
             
+            # Thêm vào vector store với user_id
             vector_store.add_documents(all_chunks)
+            
+            # Lưu thông tin file vào database
+            for file_info in uploaded_files_info:
+                filename = file_info['filename']
+                chunks_count = sum(1 for chunk in all_chunks if chunk['metadata']['filename'] == filename)
+                save_result = database.save_user_file(
+                    user_id=user_id,
+                    filename=filename,
+                    cloudinary_url=file_info['cloudinary_url'],
+                    cloudinary_public_id=file_info['cloudinary_public_id'],
+                    total_chunks=chunks_count
+                )
+                if save_result:
+                    logger.info(f"Đã lưu thông tin file {filename} vào database cho user {user_id}")
+                else:
+                    logger.warning(f"Không thể lưu thông tin file {filename} vào database")
             
             total_pages = sum(pages_info.values())
             files_summary = "\n".join([f"  • {name}: {pages} trang" for name, pages in pages_info.items()])
             
+            logger.info(f"Upload thành công: {len(uploaded_files_info)} files, {total_pages} pages, {len(all_chunks)} chunks")
+            
             return Response({
                 "success": True,
-                "message": f"Đã xử lý xong {len(pdf_paths)} tài liệu, tổng cộng {total_pages} trang",
-                "files_processed": len(pdf_paths),
+                "message": f"Đã xử lý xong {len(uploaded_files_info)} tài liệu, tổng cộng {total_pages} trang",
+                "files_processed": len(uploaded_files_info),
                 "total_pages": total_pages,
                 "files_detail": files_summary
             }, status=status.HTTP_200_OK)
@@ -738,12 +853,33 @@ class FileUploadView(APIView):
 
 
 class FileListView(APIView):
-    """API endpoint để lấy danh sách file đã upload"""
+    """API endpoint để lấy danh sách file đã upload của user"""
     
     def get(self, request):
-        stats = vector_store.get_stats()
+        session_id = get_session_id_from_request(request)
         
-        if stats["total_files"] == 0:
+        if not session_id or not auth_manager:
+            return Response(
+                {"success": False, "message": "Vui lòng đăng nhập"},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+        
+        user = auth_manager.get_user_from_session(session_id)
+        if not user or not database:
+            return Response(
+                {"success": False, "message": "Session không hợp lệ"},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+        
+        user_id = user["user_id"]
+        
+        # Lấy files từ database (có Cloudinary URL)
+        user_files = database.get_user_files(user_id)
+        
+        # Lấy stats từ vector store để có số chunks
+        stats = vector_store.get_stats(user_id=user_id)
+        
+        if not user_files:
             return Response({
                 "success": True,
                 "message": "Chưa có file nào được upload.",
@@ -752,20 +888,46 @@ class FileListView(APIView):
                 "total_chunks": 0
             }, status=status.HTTP_200_OK)
         
-        files_list = [{"filename": filename, "chunks": count} for filename, count in stats["files"].items()]
+        # Kết hợp thông tin từ database và vector store
+        files_list = []
+        for file_info in user_files:
+            filename = file_info['filename']
+            chunks_count = stats['files'].get(filename, 0)
+            files_list.append({
+                "filename": filename,
+                "chunks": chunks_count,
+                "cloudinary_url": file_info.get('cloudinary_url'),
+                "uploaded_at": file_info.get('uploaded_at')
+            })
         
         return Response({
             "success": True,
             "files": files_list,
-            "total_files": stats['total_files'],
+            "total_files": len(files_list),
             "total_chunks": stats['total_chunks']
         }, status=status.HTTP_200_OK)
 
 
 class FileDeleteView(APIView):
-    """API endpoint để xóa file"""
+    """API endpoint để xóa file của user"""
     
     def post(self, request):
+        session_id = get_session_id_from_request(request)
+        
+        if not session_id or not auth_manager:
+            return Response(
+                {"success": False, "message": "Vui lòng đăng nhập"},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+        
+        user = auth_manager.get_user_from_session(session_id)
+        if not user or not database:
+            return Response(
+                {"success": False, "message": "Session không hợp lệ"},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+        
+        user_id = user["user_id"]
         filename = request.data.get('filename', '').strip()
         
         if not filename:
@@ -774,12 +936,39 @@ class FileDeleteView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
+        # Kiểm tra file có thuộc về user không
+        file_info = database.get_user_file(user_id, filename)
+        if not file_info:
+            return Response(
+                {"success": False, "message": "File không tồn tại hoặc không thuộc về bạn"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
         try:
-            vector_store.delete_by_filename(filename)
+            import cloudinary
+            import cloudinary.uploader
             
-            pdf_path = os.path.join(settings.MEDIA_ROOT, filename)
-            if os.path.exists(pdf_path):
-                os.remove(pdf_path)
+            # Cấu hình Cloudinary
+            cloudinary.config(
+                cloud_name=settings.CLOUDINARY_CLOUD_NAME,
+                api_key=settings.CLOUDINARY_API_KEY,
+                api_secret=settings.CLOUDINARY_API_SECRET
+            )
+            
+            # Xóa từ Cloudinary
+            try:
+                cloudinary_public_id = file_info.get('cloudinary_public_id')
+                if cloudinary_public_id:
+                    cloudinary.uploader.destroy(cloudinary_public_id, resource_type="raw")
+                    logger.info(f"Đã xóa file {filename} từ Cloudinary")
+            except Exception as cloudinary_error:
+                logger.warning(f"Không thể xóa file từ Cloudinary: {str(cloudinary_error)}")
+            
+            # Xóa từ vector store (chỉ xóa chunks của user này)
+            vector_store.delete_by_filename(filename, user_id=user_id)
+            
+            # Xóa thông tin từ database
+            database.delete_user_file(user_id, filename)
             
             return Response({
                 "success": True,
@@ -795,20 +984,59 @@ class FileDeleteView(APIView):
 
 
 class FileClearAllView(APIView):
-    """API endpoint để xóa toàn bộ tài liệu"""
+    """API endpoint để xóa toàn bộ tài liệu của user"""
     
     def post(self, request):
+        session_id = get_session_id_from_request(request)
+        
+        if not session_id or not auth_manager:
+            return Response(
+                {"success": False, "message": "Vui lòng đăng nhập"},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+        
+        user = auth_manager.get_user_from_session(session_id)
+        if not user or not database:
+            return Response(
+                {"success": False, "message": "Session không hợp lệ"},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+        
+        user_id = user["user_id"]
+        
         try:
-            vector_store.clear_all()
+            import cloudinary
+            import cloudinary.uploader
             
-            for filename in os.listdir(settings.MEDIA_ROOT):
-                file_path = os.path.join(settings.MEDIA_ROOT, filename)
-                if os.path.isfile(file_path):
-                    os.remove(file_path)
+            # Cấu hình Cloudinary
+            cloudinary.config(
+                cloud_name=settings.CLOUDINARY_CLOUD_NAME,
+                api_key=settings.CLOUDINARY_API_KEY,
+                api_secret=settings.CLOUDINARY_API_SECRET
+            )
+            
+            # Lấy tất cả files của user
+            user_files = database.get_user_files(user_id)
+            
+            # Xóa từng file trên Cloudinary
+            for file_info in user_files:
+                try:
+                    cloudinary_public_id = file_info.get('cloudinary_public_id')
+                    if cloudinary_public_id:
+                        cloudinary.uploader.destroy(cloudinary_public_id, resource_type="raw")
+                except Exception as e:
+                    logger.warning(f"Không thể xóa {file_info['filename']} từ Cloudinary: {str(e)}")
+                
+                # Xóa từ vector store
+                vector_store.delete_by_filename(file_info['filename'], user_id=user_id)
+            
+            # Xóa tất cả records từ database
+            for file_info in user_files:
+                database.delete_user_file(user_id, file_info['filename'])
             
             return Response({
                 "success": True,
-                "message": "Đã xóa toàn bộ tài liệu"
+                "message": f"Đã xóa {len(user_files)} tài liệu"
             }, status=status.HTTP_200_OK)
             
         except Exception as e:
@@ -817,4 +1045,47 @@ class FileClearAllView(APIView):
                 {"success": False, "message": f"Lỗi: {str(e)}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+
+class FileViewView(APIView):
+    """API endpoint để lấy URL xem PDF từ Cloudinary"""
+    
+    def get(self, request, filename):
+        session_id = get_session_id_from_request(request)
+        
+        if not session_id or not auth_manager:
+            return Response(
+                {"success": False, "message": "Vui lòng đăng nhập"},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+        
+        user = auth_manager.get_user_from_session(session_id)
+        if not user or not database:
+            return Response(
+                {"success": False, "message": "Session không hợp lệ"},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+        
+        user_id = user["user_id"]
+        
+        # Lấy thông tin file
+        file_info = database.get_user_file(user_id, filename)
+        if not file_info:
+            return Response(
+                {"success": False, "message": "File không tồn tại hoặc không thuộc về bạn"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        cloudinary_url = file_info.get('cloudinary_url')
+        if not cloudinary_url:
+            return Response(
+                {"success": False, "message": "Không tìm thấy URL của file"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        return Response({
+            "success": True,
+            "url": cloudinary_url,
+            "filename": filename
+        }, status=status.HTTP_200_OK)
 

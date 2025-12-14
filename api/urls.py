@@ -24,5 +24,6 @@ urlpatterns = [
     path('files/list/', views.FileListView.as_view(), name='file-list'),
     path('files/delete/', views.FileDeleteView.as_view(), name='file-delete'),
     path('files/clear-all/', views.FileClearAllView.as_view(), name='file-clear-all'),
+    path('files/view/<str:filename>/', views.FileViewView.as_view(), name='file-view'),
 ]
 

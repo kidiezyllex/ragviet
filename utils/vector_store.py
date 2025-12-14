@@ -128,7 +128,8 @@ class VectorStore:
                 "text": chunk["text"],
                 "filename": chunk["metadata"]["filename"],
                 "page_number": chunk["metadata"]["page_number"],
-                "chunk_id": chunk["metadata"]["chunk_id"]
+                "chunk_id": chunk["metadata"]["chunk_id"],
+                "user_id": chunk["metadata"].get("user_id")  # Lưu user_id nếu có
             }
             self.metadata.append(meta_entry)
             filename = meta_entry["filename"]
@@ -138,7 +139,7 @@ class VectorStore:
         self.save_index()
         logger.info(f"Đã thêm {len(chunks)} chunks vào vector store")
     
-    def search(self, query: str, top_k: int = 20, filename: Optional[str] = None) -> List[Dict]:
+    def search(self, query: str, top_k: int = 20, filename: Optional[str] = None, user_id: Optional[str] = None) -> List[Dict]:
         """
         Tìm kiếm các chunk giống nghĩa nhất
         
@@ -146,6 +147,7 @@ class VectorStore:
             query: Câu hỏi
             top_k: Số lượng kết quả trả về
             filename: Tên file cụ thể để tìm kiếm (nếu None thì tìm trong tất cả)
+            user_id: ID của user để filter (nếu None thì tìm trong tất cả)
             
         Returns:
             List các chunk tìm được
@@ -157,7 +159,7 @@ class VectorStore:
         query_embedding = self.encoder.encode([query])
         query_embedding = np.array(query_embedding).astype('float32')
         
-        search_k = top_k * 3 if filename else top_k
+        search_k = top_k * 3 if filename or user_id else top_k
         k = min(search_k, self.index.ntotal)
         distances, indices = self.index.search(query_embedding, k)
         
@@ -167,24 +169,31 @@ class VectorStore:
                 meta = self.metadata[idx]
                 if filename and meta["filename"] != filename:
                     continue
+                if user_id and meta.get("user_id") != user_id:
+                    continue
                 result = meta.copy()
                 result["distance"] = float(distance)
                 results.append(result)
                 if len(results) >= top_k:
                     break
         
-        logger.info(f"Tìm được {len(results)} kết quả cho query: {query[:50]}... (filename filter: {filename})")
+        logger.info(f"Tìm được {len(results)} kết quả cho query: {query[:50]}... (filename filter: {filename}, user_id filter: {user_id})")
         return results
     
-    def delete_by_filename(self, filename: str):
+    def delete_by_filename(self, filename: str, user_id: Optional[str] = None):
         """
         Xóa tất cả chunks của một file
         
         Args:
             filename: Tên file cần xóa
+            user_id: ID của user (nếu có để đảm bảo chỉ xóa file của user đó)
         """
-        indices_to_keep = [i for i, meta in enumerate(self.metadata) 
-                          if meta["filename"] != filename]
+        if user_id:
+            indices_to_keep = [i for i, meta in enumerate(self.metadata) 
+                              if not (meta["filename"] == filename and meta.get("user_id") == user_id)]
+        else:
+            indices_to_keep = [i for i, meta in enumerate(self.metadata) 
+                              if meta["filename"] != filename]
         
         if len(indices_to_keep) == len(self.metadata):
             logger.warning(f"Không tìm thấy file {filename} trong vector store")
@@ -284,17 +293,26 @@ class VectorStore:
         logger.info(f"Đã mở rộng từ {len(chunks)} chunks lên {len(expanded_chunks)} chunks (bao gồm {page_range} trang lân cận)")
         return expanded_chunks
     
-    def get_stats(self) -> Dict:
-        """Lấy thống kê về vector store"""
+    def get_stats(self, user_id: Optional[str] = None) -> Dict:
+        """
+        Lấy thống kê về vector store
+        
+        Args:
+            user_id: ID của user để filter (nếu None thì lấy tất cả)
+        """
         files = {}
+        total_chunks = 0
         for meta in self.metadata:
+            if user_id and meta.get("user_id") != user_id:
+                continue
             filename = meta["filename"]
             if filename not in files:
                 files[filename] = 0
             files[filename] += 1
+            total_chunks += 1
         
         return {
-            "total_chunks": len(self.metadata),
+            "total_chunks": total_chunks,
             "total_files": len(files),
             "files": files
         }

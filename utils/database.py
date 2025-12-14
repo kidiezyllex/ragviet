@@ -72,6 +72,11 @@ class Database:
         self.db.auth_sessions.create_index("session_id", unique=True)
         self.db.auth_sessions.create_index("user_id")
         
+        # Index cho user_files collection
+        self.db.user_files.create_index("user_id")
+        self.db.user_files.create_index([("user_id", 1), ("filename", 1)], unique=True)
+        self.db.user_files.create_index("filename")
+        
         logger.info("Đã tạo indexes")
     
     def create_user(self, username: str, email: str, password: str) -> Optional[Dict]:
@@ -586,4 +591,123 @@ class Database:
                 "user_id": user_id,
                 "chat_sessions": [],
             }
+    
+    def save_user_file(self, user_id: str, filename: str, cloudinary_url: str, cloudinary_public_id: str, 
+                       total_chunks: int = 0) -> bool:
+        """
+        Lưu thông tin file của user
+        
+        Args:
+            user_id: ID của user
+            filename: Tên file
+            cloudinary_url: URL của file trên Cloudinary
+            cloudinary_public_id: Public ID trên Cloudinary
+            total_chunks: Số lượng chunks của file
+            
+        Returns:
+            True nếu thành công, False nếu lỗi
+        """
+        try:
+            from datetime import datetime
+            file_doc = {
+                "user_id": user_id,
+                "filename": filename,
+                "cloudinary_url": cloudinary_url,
+                "cloudinary_public_id": cloudinary_public_id,
+                "total_chunks": total_chunks,
+                "uploaded_at": datetime.utcnow()
+            }
+            
+            self.db.user_files.update_one(
+                {"user_id": user_id, "filename": filename},
+                {"$set": file_doc},
+                upsert=True
+            )
+            logger.info(f"Đã lưu thông tin file {filename} cho user {user_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Lỗi khi lưu thông tin file: {str(e)}")
+            return False
+    
+    def get_user_files(self, user_id: str) -> List[Dict]:
+        """
+        Lấy danh sách files của user
+        
+        Args:
+            user_id: ID của user
+            
+        Returns:
+            List các file documents
+        """
+        try:
+            files = list(self.db.user_files.find({"user_id": user_id}).sort("uploaded_at", -1))
+            for file in files:
+                file["_id"] = str(file["_id"])
+                file["uploaded_at"] = _format_timestamp(file.get("uploaded_at"))
+            return files
+        except Exception as e:
+            logger.error(f"Lỗi khi lấy danh sách files: {str(e)}")
+            return []
+    
+    def get_user_file(self, user_id: str, filename: str) -> Optional[Dict]:
+        """
+        Lấy thông tin một file cụ thể của user
+        
+        Args:
+            user_id: ID của user
+            filename: Tên file
+            
+        Returns:
+            File document hoặc None
+        """
+        try:
+            file = self.db.user_files.find_one({"user_id": user_id, "filename": filename})
+            if file:
+                file["_id"] = str(file["_id"])
+                file["uploaded_at"] = _format_timestamp(file.get("uploaded_at"))
+            return file
+        except Exception as e:
+            logger.error(f"Lỗi khi lấy thông tin file: {str(e)}")
+            return None
+    
+    def delete_user_file(self, user_id: str, filename: str) -> bool:
+        """
+        Xóa thông tin file của user
+        
+        Args:
+            user_id: ID của user
+            filename: Tên file
+            
+        Returns:
+            True nếu thành công, False nếu lỗi
+        """
+        try:
+            result = self.db.user_files.delete_one({"user_id": user_id, "filename": filename})
+            logger.info(f"Đã xóa thông tin file {filename} của user {user_id}")
+            return result.deleted_count > 0
+        except Exception as e:
+            logger.error(f"Lỗi khi xóa file: {str(e)}")
+            return False
+    
+    def update_file_chunks(self, user_id: str, filename: str, chunks_count: int) -> bool:
+        """
+        Cập nhật số lượng chunks của file
+        
+        Args:
+            user_id: ID của user
+            filename: Tên file
+            chunks_count: Số lượng chunks
+            
+        Returns:
+            True nếu thành công
+        """
+        try:
+            result = self.db.user_files.update_one(
+                {"user_id": user_id, "filename": filename},
+                {"$set": {"total_chunks": chunks_count}}
+            )
+            return result.modified_count > 0
+        except Exception as e:
+            logger.error(f"Lỗi khi cập nhật chunks: {str(e)}")
+            return False
 

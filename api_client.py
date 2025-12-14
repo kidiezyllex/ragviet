@@ -210,12 +210,25 @@ def api_upload_files(files, session_id):
         file_handles = []
         
         for file in files:
-            # Gradio file object có thuộc tính name hoặc path
-            file_path = getattr(file, 'name', None) or getattr(file, 'path', None)
-            if file_path and os.path.exists(file_path):
+            # Lấy path từ SimpleNamespace hoặc file object
+            file_path = getattr(file, 'path', None) or getattr(file, 'name', None)
+            # Lấy tên file gốc (nếu có)
+            original_name = getattr(file, 'name', None)
+            
+            if not file_path or not os.path.exists(file_path):
+                logger.warning(f"File không tồn tại: {file_path}")
+                continue
+            
+            try:
                 file_handle = open(file_path, 'rb')
                 file_handles.append(file_handle)
-                files_data.append(('files', (os.path.basename(file_path), file_handle, 'application/pdf')))
+                
+                # Sử dụng tên gốc nếu có, không thì dùng basename của path
+                filename = original_name if original_name and original_name != file_path else os.path.basename(file_path)
+                files_data.append(('files', (filename, file_handle, 'application/pdf')))
+            except Exception as e:
+                logger.error(f"Không thể mở file {file_path}: {e}")
+                continue
         
         if not files_data:
             return {"success": False, "message": "Không tìm thấy file để upload"}
@@ -237,17 +250,19 @@ def api_upload_files(files, session_id):
         if response.status_code == 200:
             return response.json()
         else:
-            return response.json()
+            error_msg = response.json() if response.content else {"message": f"HTTP {response.status_code}"}
+            return {"success": False, **error_msg}
     except Exception as e:
+        logger.error(f"Lỗi khi upload files: {e}")
         return {"success": False, "message": f"Lỗi kết nối API: {str(e)}"}
 
 
-def api_get_files():
+def api_get_files(session_id=None):
     """Gọi API lấy danh sách files"""
     try:
         response = requests.get(
             f'{API_BASE_URL}/files/list/',
-            headers={'Content-Type': 'application/json'}
+            headers=get_auth_headers(session_id)
         )
         if response.status_code == 200:
             return response.json()
@@ -257,27 +272,43 @@ def api_get_files():
         return {"success": False, "files": [], "message": f"Lỗi kết nối API: {str(e)}"}
 
 
-def api_delete_file(filename):
+def api_delete_file(filename, session_id=None):
     """Gọi API xóa file"""
     try:
         response = requests.post(
             f'{API_BASE_URL}/files/delete/',
             json={'filename': filename},
-            headers={'Content-Type': 'application/json'}
+            headers=get_auth_headers(session_id)
         )
         return response.json()
     except Exception as e:
         return {"success": False, "message": f"Lỗi kết nối API: {str(e)}"}
 
 
-def api_clear_all_files():
+def api_clear_all_files(session_id=None):
     """Gọi API xóa toàn bộ files"""
     try:
         response = requests.post(
             f'{API_BASE_URL}/files/clear-all/',
-            headers={'Content-Type': 'application/json'}
+            headers=get_auth_headers(session_id)
         )
         return response.json()
     except Exception as e:
         return {"success": False, "message": f"Lỗi kết nối API: {str(e)}"}
+
+
+def api_view_file(filename, session_id=None):
+    """Gọi API lấy URL để xem file PDF"""
+    try:
+        response = requests.get(
+            f'{API_BASE_URL}/files/view/{filename}/',
+            headers=get_auth_headers(session_id)
+        )
+        if response.status_code == 200:
+            return response.json()
+        else:
+            return {"success": False, "message": "Không thể lấy URL của file"}
+    except Exception as e:
+        return {"success": False, "message": f"Lỗi kết nối API: {str(e)}"}
+
 

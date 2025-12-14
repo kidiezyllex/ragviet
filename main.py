@@ -4,9 +4,12 @@ import tempfile
 from types import SimpleNamespace
 import asyncio
 from typing import List, Optional, Tuple
+import logging
 
 from dotenv import load_dotenv
 from nicegui import app, ui, context
+
+logger = logging.getLogger(__name__)
 
 from api_client import (
     api_chat_send,
@@ -23,6 +26,7 @@ from api_client import (
     api_reset_password,
     api_upload_files,
     api_verify_session,
+    api_view_file,
 )
 
 load_dotenv()
@@ -156,7 +160,7 @@ def require_auth():
 # Data helpers
 # -------------------------
 def refresh_files_list() -> Tuple[str, List[str]]:
-    result = api_get_files()
+    result = api_get_files(session_state.session_id)
     if not result.get("success") or result.get("total_files", 0) == 0:
         return "Chưa có file nào được upload.", []
     files = result.get("files", [])
@@ -172,46 +176,222 @@ def refresh_files_list() -> Tuple[str, List[str]]:
     return display_text, file_names
 
 
-def upload_temp_files(upload_event) -> None:
+async def upload_temp_files(upload_event) -> bool:
     """Nhận UploadEvent (có thể 1 hoặc nhiều file) và gọi API upload."""
     if not require_login():
-        return
+        return False
 
+    # NiceGUI upload event - có thể là UploadEvent object hoặc list
+    # NiceGUI có thể truyền event object hoặc trực tiếp là file objects
+    incoming = []
+    
+    # Debug: In ra toàn bộ thông tin về upload_event
+    logger.info(f"=== UPLOAD EVENT DEBUG ===")
+    logger.info(f"Type: {type(upload_event)}")
+    if hasattr(upload_event, "__dict__"):
+        logger.info(f"Dict: {upload_event.__dict__}")
+    if hasattr(upload_event, "__class__"):
+        logger.info(f"Class: {upload_event.__class__}")
+        logger.info(f"Class attributes: {[x for x in dir(upload_event.__class__) if not x.startswith('_')]}")
+    logger.info(f"All attributes: {[x for x in dir(upload_event) if not x.startswith('_')]}")
+    
+    # Thử nhiều cách để lấy files
     if hasattr(upload_event, "files") and upload_event.files:
-        incoming = upload_event.files
+        incoming = upload_event.files if isinstance(upload_event.files, list) else [upload_event.files]
+        logger.info(f"Got files from .files attribute: {len(incoming)} files")
+    elif hasattr(upload_event, "file") and upload_event.file:
+        incoming = [upload_event.file] if not isinstance(upload_event.file, list) else upload_event.file
+        logger.info(f"Got files from .file attribute: {len(incoming)} files")
+    elif isinstance(upload_event, list):
+        incoming = upload_event
+        logger.info(f"Upload event is a list: {len(incoming)} items")
+    elif hasattr(upload_event, "__iter__") and not isinstance(upload_event, str):
+        try:
+            incoming = list(upload_event)
+            logger.info(f"Upload event is iterable: {len(incoming)} items")
+        except:
+            incoming = [upload_event]
+            logger.info(f"Could not iterate, treating as single item")
     else:
         incoming = [upload_event]
+        logger.info(f"Treating upload event as single item")
+
+    logger.info(f"Received upload event with {len(incoming)} file(s)")
+    logger.info(f"Upload event type: {type(upload_event)}")
+    logger.info(f"Upload event attributes: {dir(upload_event) if hasattr(upload_event, '__dict__') else 'N/A'}")
 
     temp_wrappers: List[SimpleNamespace] = []
     try:
-        for f in incoming:
-            name = getattr(f, "name", "upload.pdf")
-            content = getattr(f, "content", None)
+        for idx, f in enumerate(incoming):
+            logger.info(f"Processing file {idx+1}/{len(incoming)}")
+            logger.info(f"File object type: {type(f)}")
+            logger.info(f"File object attributes: {dir(f) if hasattr(f, '__dict__') else 'N/A'}")
+            
+            # Lấy tên file gốc - thử nhiều cách
+            original_name = None
+            if hasattr(f, "name"):
+                original_name = f.name
+                logger.info(f"Got name from .name: {original_name}")
+            elif hasattr(f, "filename"):
+                original_name = f.filename
+                logger.info(f"Got name from .filename: {original_name}")
+            elif isinstance(f, dict):
+                original_name = f.get("name") or f.get("filename")
+                logger.info(f"Got name from dict: {original_name}")
+            elif hasattr(f, "__dict__"):
+                # Thử lấy từ __dict__
+                original_name = getattr(f, "__dict__", {}).get("name") or getattr(f, "__dict__", {}).get("filename")
+                logger.info(f"Got name from __dict__: {original_name}")
+            
+            if not original_name:
+                original_name = "upload.pdf"
+                logger.warning(f"Using default name: {original_name}")
+            
+            logger.info(f"Final file name: {original_name}")
+            
+            # Lấy nội dung file - thử nhiều cách
+            content = None
+            file_path = None
+            
+            # Cách 1: Kiểm tra xem có phải là file path string không
+            if isinstance(f, str) and os.path.exists(f):
+                file_path = f
+                logger.info(f"File is a path string: {file_path}")
+            
+            # Cách 2: Đọc từ content attribute
+            elif hasattr(f, "content"):
+                try:
+                    content = f.content
+                    if content:
+                        logger.info(f"Read content from .content attribute: {len(content) if isinstance(content, bytes) else 'not bytes'} bytes")
+                    else:
+                        logger.warning("Content attribute exists but is None/empty")
+                except Exception as e:
+                    logger.warning(f"Error reading .content: {e}")
+            
+            # Cách 3: Đọc từ file object (có thể là coroutine)
+            elif hasattr(f, "read"):
+                try:
+                    if hasattr(f, "seek"):
+                        f.seek(0)
+                    # Kiểm tra xem read() có phải là coroutine không
+                    read_result = f.read()
+                    if asyncio.iscoroutine(read_result):
+                        content = await read_result
+                        logger.info(f"Read content from async .read(): {len(content) if content else 0} bytes")
+                    else:
+                        content = read_result
+                        logger.info(f"Read content from sync .read(): {len(content) if content else 0} bytes")
+                    if hasattr(f, "seek"):
+                        f.seek(0)  # Reset để có thể đọc lại
+                except Exception as e:
+                    logger.warning(f"Could not read from file object: {e}")
+            
+            # Cách 4: Đọc từ path attribute
+            if content is None and file_path is None:
+                if hasattr(f, "path"):
+                    file_path = f.path
+                    logger.info(f"Got path from .path: {file_path}")
+                elif isinstance(f, dict):
+                    file_path = f.get("path")
+                    logger.info(f"Got path from dict: {file_path}")
+                elif hasattr(f, "__dict__"):
+                    file_path = getattr(f, "__dict__", {}).get("path")
+                    logger.info(f"Got path from __dict__: {file_path}")
+            
+            # Đọc từ file path nếu có
+            if file_path and os.path.exists(file_path):
+                try:
+                    with open(file_path, 'rb') as file_handle:
+                        content = file_handle.read()
+                    logger.info(f"Read content from path {file_path}: {len(content)} bytes")
+                except Exception as e:
+                    logger.error(f"Could not read from path {file_path}: {e}")
+            
+            # Cách 5: NiceGUI có thể lưu file trong thư mục tạm
             if content is None:
+                # Thử tìm trong thư mục upload của NiceGUI
+                possible_paths = [
+                    getattr(f, "path", None),
+                    getattr(f, "file_path", None),
+                    getattr(f, "tmp_path", None),
+                ]
+                for pp in possible_paths:
+                    if pp and os.path.exists(pp):
+                        try:
+                            with open(pp, 'rb') as file_handle:
+                                content = file_handle.read()
+                            logger.info(f"Read content from possible path {pp}: {len(content)} bytes")
+                            break
+                        except:
+                            pass
+            
+            if content is None or (isinstance(content, bytes) and len(content) == 0):
+                logger.error(f"Không thể đọc nội dung file: {original_name}")
+                logger.error(f"File object: {f}")
+                logger.error(f"File path: {file_path}")
                 continue
-            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(name)[-1] or ".pdf")
-            tmp.write(content if isinstance(content, (bytes, bytearray)) else content.read())
-            tmp.flush()
-            tmp.close()
-            temp_wrappers.append(SimpleNamespace(path=tmp.name, name=tmp.name))
+            
+            # Tạo file tạm với tên gốc
+            file_ext = os.path.splitext(original_name)[-1] or ".pdf"
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=file_ext, prefix="ragviet_")
+            try:
+                if isinstance(content, bytes):
+                    tmp.write(content)
+                elif hasattr(content, "read"):
+                    tmp.write(content.read())
+                else:
+                    tmp.write(str(content).encode())
+                tmp.flush()
+                tmp.close()
+                
+                logger.info(f"Created temp file: {tmp.name} for {original_name}")
+                
+                # Lưu cả path và tên gốc
+                temp_wrappers.append(SimpleNamespace(
+                    path=tmp.name, 
+                    name=original_name  # Lưu tên gốc để API biết tên file
+                ))
+            except Exception as e:
+                logger.error(f"Error writing temp file: {e}")
+                try:
+                    tmp.close()
+                    if os.path.exists(tmp.name):
+                        os.remove(tmp.name)
+                except:
+                    pass
+                continue
 
         if not temp_wrappers:
+            logger.error("No valid files to upload")
             notify_error("Không tìm thấy file để upload")
-            return
+            return False
 
+        logger.info(f"Uploading {len(temp_wrappers)} file(s) to API...")
         result = api_upload_files(temp_wrappers, session_state.session_id)
+        
         if result.get("success"):
             notify_success(result.get("message", "Đã upload file thành công!"))
+            logger.info("Upload successful, returning True for refresh")
+            return True
         else:
-            notify_error(result.get("message", "Lỗi khi upload file"))
+            error_msg = result.get("message", "Lỗi khi upload file")
+            logger.error(f"Upload failed: {error_msg}")
+            notify_error(error_msg)
+            return False
     except Exception as e:
+        logger.error(f"Exception in upload_temp_files: {e}", exc_info=True)
         notify_error(f"Lỗi upload: {e}")
+        return False
     finally:
+        # Xóa temp files sau khi upload xong
         for t in temp_wrappers:
             try:
-                os.remove(t.path)
-            except Exception:
-                pass
+                if os.path.exists(t.path):
+                    os.remove(t.path)
+                    logger.info(f"Deleted temp file: {t.path}")
+            except Exception as e:
+                logger.warning(f"Không thể xóa temp file {t.path}: {e}")
 
 
 # -------------------------
@@ -304,24 +484,62 @@ def render_sidebar(include_file_select: bool = True):
     with ui.column().classes(
         "bg-gray-50 border-r h-screen p-4 gap-3 shrink-0 justify-between"
     ).style("width:25%;max-width:25%;min-width:260px; display: flex; flex-direction: column"):
+        if include_file_select:
+            file_select = ui.select(
+                options=["Tất cả"] + file_names,
+                value="Tất cả",
+                label="Chọn tài liệu để chat",
+            ).props("clearable dense").classes("w-full").style("font-size: 1rem")
+        else:
+            file_select = None
+
         def refresh_lists():
-            new_text, new_files = refresh_files_list()
-            if include_file_select and file_select is not None:
-                file_select.options = ["Tất cả"] + new_files
+            """Refresh danh sách files và cập nhật dropdown"""
+            try:
+                new_text, new_files = refresh_files_list()
+                if include_file_select and file_select is not None:
+                    new_options = ["Tất cả"] + new_files
+                    file_select.options = new_options
+                    # Giữ nguyên giá trị hiện tại nếu vẫn còn trong options
+                    current_value = file_select.value
+                    if current_value and current_value not in new_options:
+                        file_select.value = "Tất cả"
+                    logger.info(f"Updated file_select with {len(new_files)} files")
+                return new_files
+            except Exception as e:
+                logger.error(f"Error refreshing lists: {e}", exc_info=True)
+                return []
+
+        async def handle_upload(e):
+            """Xử lý upload và refresh sau khi thành công"""
+            try:
+                result = await upload_temp_files(e)
+                if result:  # Upload thành công
+                    # Đợi một chút để đảm bảo server đã xử lý xong và lưu vào DB
+                    await asyncio.sleep(1.0)
+                    # Retry refresh với timeout ngắn hơn
+                    max_retries = 5
+                    for retry in range(max_retries):
+                        new_files = refresh_lists()
+                        if new_files:  # Có files rồi
+                            logger.info(f"Successfully refreshed file list after {retry + 1} attempts")
+                            # Force update UI
+                            if file_select is not None:
+                                file_select.update()
+                            break
+                        await asyncio.sleep(0.3)
+                    else:
+                        logger.warning("File list refresh completed but no files found")
+            except Exception as ex:
+                logger.error(f"Error in handle_upload: {ex}", exc_info=True)
+                notify_error(f"Lỗi khi xử lý upload: {ex}")
 
         with ui.column().classes("gap-3 w-full"):
             ui.upload(
                 label="Upload tài liệu PDF",
                 multiple=True,
-                on_upload=lambda e: (upload_temp_files(e), refresh_lists()),
+                on_upload=handle_upload,
             ).props("color=primary flat no-thumbnails").classes("w-full")
-
-            if include_file_select:
-                file_select = ui.select(
-                    options=["Tất cả"] + file_names,
-                    value="Tất cả",
-                    label="Chọn tài liệu để chat",
-                ).props("clearable dense").classes("w-full").style("font-size: 1rem")
 
             ui.input(
                 placeholder="Tìm kiếm tài liệu",
@@ -561,28 +779,87 @@ def documents_page():
     render_navbar()
     ui.markdown("## Quản lý tài liệu")
 
-    files_md = ui.markdown("")
+    files_container = ui.column().classes("w-full gap-2")
     filename_dropdown = ui.select(options=[], label="Chọn file để xóa").props("clearable").classes("w-80")
 
     def refresh():
-        text, names = refresh_files_list()
-        files_md.set_content(text)
-        filename_dropdown.options = names
+        result = api_get_files(session_state.session_id)
+        files_container.clear()
+        
+        if not result.get("success") or result.get("total_files", 0) == 0:
+            with files_container:
+                ui.label("Chưa có file nào được upload.").classes("text-gray-500")
+            filename_dropdown.options = []
+            return
+        
+        files = result.get("files", [])
+        filename_dropdown.options = [file["filename"] for file in files]
+        
+        with files_container:
+            ui.markdown(f"### Tổng số: {result['total_files']} tài liệu, {result['total_chunks']} chunks")
+            
+            for file in files:
+                with ui.card().classes("w-full p-4 gap-2"):
+                    with ui.row().classes("items-center justify-between w-full"):
+                        with ui.column().classes("gap-1"):
+                            ui.label(f"📄 {file['filename']}").classes("text-lg font-semibold")
+                            ui.label(f"{file['chunks']} chunks").classes("text-sm text-gray-600")
+                        
+                        with ui.row().classes("gap-2"):
+                            # Nút view PDF
+                            def view_pdf(fname=file['filename']):
+                                view_result = api_view_file(fname, session_state.session_id)
+                                if view_result.get("success"):
+                                    url = view_result.get("url")
+                                    # Mở PDF trong tab mới
+                                    ui.run_javascript(f'window.open("{url}", "_blank")')
+                                else:
+                                    notify_error(view_result.get("message", "Không thể xem file"))
+                            
+                            ui.button("👁️ Xem PDF", on_click=lambda f=file['filename']: view_pdf(f)).props("outline")
+                            
+                            # Nút xóa
+                            def delete_file(fname=file['filename']):
+                                res = api_delete_file(fname, session_state.session_id)
+                                if res.get("success"):
+                                    notify_success(res.get("message", "Đã xóa file"))
+                                    refresh()
+                                else:
+                                    notify_error(res.get("message", "Không thể xóa file"))
+                            
+                            ui.button("🗑️ Xóa", color="negative", on_click=lambda f=file['filename']: delete_file(f)).props("outline")
 
-    ui.button("Làm mới danh sách", on_click=refresh)
+    ui.button("🔄 Làm mới danh sách", on_click=refresh).classes("mb-4")
 
     ui.markdown("### Upload mới")
+    
+    async def handle_documents_upload(e):
+        """Xử lý upload trong trang documents"""
+        try:
+            result = await upload_temp_files(e)
+            if result:  # Upload thành công
+                # Đợi một chút để đảm bảo server đã xử lý xong và lưu vào DB
+                await asyncio.sleep(1.5)
+                # Retry refresh nếu cần
+                for retry in range(3):
+                    refresh()
+                    await asyncio.sleep(0.5)
+                logger.info("Refreshed documents page after upload")
+        except Exception as ex:
+            logger.error(f"Error in handle_documents_upload: {ex}", exc_info=True)
+            notify_error(f"Lỗi khi xử lý upload: {ex}")
+    
     ui.upload(
         multiple=True,
         label="Chọn hoặc kéo thả PDF",
-        on_upload=lambda e: (upload_temp_files(e), refresh()),
+        on_upload=handle_documents_upload,
     ).props('accept=".pdf"')
 
     def delete_selected():
         if not filename_dropdown.value:
             notify_error("Vui lòng chọn file cần xóa")
             return
-        res = api_delete_file(filename_dropdown.value)
+        res = api_delete_file(filename_dropdown.value, session_state.session_id)
         if res.get("success"):
             notify_success(res.get("message", "Đã xóa file"))
             refresh()
@@ -590,15 +867,16 @@ def documents_page():
             notify_error(res.get("message", "Không thể xóa file"))
 
     def clear_all():
-        res = api_clear_all_files()
+        res = api_clear_all_files(session_state.session_id)
         if res.get("success"):
             notify_success(res.get("message", "Đã xóa toàn bộ tài liệu"))
             refresh()
         else:
             notify_error(res.get("message", "Không thể xóa tài liệu"))
 
-    ui.button("🗑️ Xóa file đã chọn", color="negative", on_click=delete_selected)
-    ui.button("🗑️ Xóa toàn bộ", color="negative", on_click=clear_all)
+    with ui.row().classes("gap-2 mt-4"):
+        ui.button("🗑️ Xóa file đã chọn", color="negative", on_click=delete_selected)
+        ui.button("🗑️ Xóa toàn bộ", color="negative", on_click=clear_all)
 
     refresh()
 
