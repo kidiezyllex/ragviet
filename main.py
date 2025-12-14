@@ -371,7 +371,12 @@ async def upload_temp_files(upload_event) -> bool:
         result = api_upload_files(temp_wrappers, session_state.session_id)
         
         if result.get("success"):
-            notify_success(result.get("message", "Đã upload file thành công!"))
+            message = result.get("message", "Đã upload file thành công!")
+            # Nếu có warning (file không có text nhưng vẫn upload được)
+            if result.get("warning"):
+                notify_success(message, notify_type="warning")
+            else:
+                notify_success(message)
             logger.info("Upload successful, returning True for refresh")
             return True
         else:
@@ -575,8 +580,27 @@ def home_page():
         return
     
     def build_content(file_select):
-        # Header cuộc trò chuyện
-        conv_label = ui.label("Trò chuyện với: Tất cả tài liệu").classes("text-xl font-semibold")
+        # Header cuộc trò chuyện với button xem PDF
+        with ui.row().classes("w-full items-center justify-between mb-4"):
+            conv_label = ui.label("Trò chuyện với: Tất cả tài liệu").classes("text-xl font-semibold")
+            
+            # Button xem PDF
+            def view_selected_pdf():
+                selected = file_select.value if file_select else None
+                if not selected or selected == "Tất cả":
+                    notify_error("Vui lòng chọn một tài liệu cụ thể để xem")
+                    return
+                
+                view_result = api_view_file(selected, session_state.session_id)
+                if view_result.get("success"):
+                    url = view_result.get("url")
+                    # Mở PDF trong tab mới
+                    ui.run_javascript(f'window.open("{url}", "_blank")')
+                else:
+                    notify_error(view_result.get("message", "Không thể xem file"))
+            
+            ui.button("👁️ Xem PDF", on_click=view_selected_pdf).props("outline").classes("justify-end")
+        
         if file_select:
             def update_conv_label(e):
                 name = e.value or "Tất cả"

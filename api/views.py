@@ -753,8 +753,8 @@ class FileUploadView(APIView):
                 with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
                     for chunk in file.chunks():
                         tmp_file.write(chunk)
-                    tmp_file.flush()  # Đảm bảo dữ liệu được ghi vào disk
-                    os.fsync(tmp_file.fileno())  # Đồng bộ với disk
+                    tmp_file.flush()
+                    os.fsync(tmp_file.fileno())
                     tmp_path = tmp_file.name
                 
                 # Kiểm tra file đã được tạo và có nội dung
@@ -808,13 +808,23 @@ class FileUploadView(APIView):
                         status=status.HTTP_500_INTERNAL_SERVER_ERROR
                     )
             
-            # Xử lý PDF để tạo chunks
             all_chunks = []
             pages_info = {}
+            
+            user_files = database.get_user_files(user_id)
+            valid_filenames = [f['filename'] for f in user_files] if user_files else []
+            for file_info in uploaded_files_info:
+                valid_filenames.append(file_info['filename'])
+            
+            logger.info(f"Đang dọn dẹp các chunks cũ (file tạm) của user {user_id}")
+            vector_store.delete_temp_files_by_user(user_id, valid_filenames=valid_filenames)
             
             for file_info in uploaded_files_info:
                 filename = file_info['filename']
                 tmp_path = file_info['tmp_path']
+                
+                logger.info(f"Đang xóa chunks cũ của file {filename} (nếu có) cho user {user_id}")
+                vector_store.delete_by_filename(filename, user_id=user_id)
                 
                 # Kiểm tra file tạm có tồn tại và có thể đọc được không
                 if not os.path.exists(tmp_path):
@@ -836,15 +846,12 @@ class FileUploadView(APIView):
                 logger.info(f"Đang xử lý PDF {filename} từ {tmp_path} (size: {file_size} bytes)")
                 
                 try:
-                    chunks, pages_dict = pdf_processor.process_multiple_pdfs([tmp_path])
+                    chunks, pages_dict = pdf_processor.process_multiple_pdfs([tmp_path], filenames=[filename])
                     if chunks and len(chunks) > 0:
-                        # Thêm user_id vào metadata của mỗi chunk
                         for chunk in chunks:
                             chunk['metadata']['user_id'] = user_id
                         all_chunks.extend(chunks)
-                        # pages_dict là dict {filename: num_pages}, lấy giá trị đầu tiên
                         if pages_dict:
-                            # Lấy số trang từ dict (có thể có nhiều files nhưng chúng ta chỉ xử lý 1 file mỗi lần)
                             page_count = list(pages_dict.values())[0] if pages_dict else 0
                             pages_info[filename] = page_count
                             logger.info(f"Đã xử lý {filename}: {len(chunks)} chunks, {page_count} trang")
@@ -869,34 +876,6 @@ class FileUploadView(APIView):
                     except:
                         pass
             
-            if not all_chunks:
-                # Kiểm tra xem có file nào được upload không
-                if not uploaded_files_info:
-                    return Response(
-                        {"success": False, "message": "Không có file nào được upload"},
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-                
-                # Nếu có file nhưng không tạo được chunks, có thể là PDF bị lỗi hoặc không có text
-                error_files = [f['filename'] for f in uploaded_files_info if pages_info.get(f['filename'], 0) == 0]
-                if error_files:
-                    return Response(
-                        {
-                            "success": False, 
-                            "message": f"Không thể trích xuất văn bản từ các file PDF: {', '.join(error_files)}. Có thể file PDF bị lỗi, bị mã hóa, hoặc không có nội dung text (chỉ có hình ảnh)."
-                        },
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-                
-                return Response(
-                    {"success": False, "message": "Không thể trích xuất văn bản từ các file PDF"},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            
-            # Thêm vào vector store với user_id
-            vector_store.add_documents(all_chunks)
-            
-            # Lưu thông tin file vào database
             for file_info in uploaded_files_info:
                 filename = file_info['filename']
                 chunks_count = sum(1 for chunk in all_chunks if chunk['metadata']['filename'] == filename)
@@ -908,9 +887,34 @@ class FileUploadView(APIView):
                     total_chunks=chunks_count
                 )
                 if save_result:
-                    logger.info(f"Đã lưu thông tin file {filename} vào database cho user {user_id}")
+                    logger.info(f"Đã lưu thông tin file {filename} vào database cho user {user_id} ({chunks_count} chunks)")
                 else:
                     logger.warning(f"Không thể lưu thông tin file {filename} vào database")
+            
+            # Thêm vào vector store với user_id (chỉ các file có chunks)
+            if all_chunks:
+                vector_store.add_documents(all_chunks)
+            
+            # Kiểm tra và cảnh báo về các file không có text
+            files_without_text = [f['filename'] for f in uploaded_files_info if pages_info.get(f['filename'], 0) == 0]
+            files_with_text = [f['filename'] for f in uploaded_files_info if pages_info.get(f['filename'], 0) > 0]
+            
+            # Nếu tất cả files đều không có text, trả về cảnh báo nhưng vẫn thành công (file đã upload lên Cloudinary)
+            if not all_chunks and uploaded_files_info:
+                warning_msg = f"Đã upload {len(uploaded_files_info)} file(s) lên Cloudinary. "
+                if files_without_text:
+                    warning_msg += f"Lưu ý: Không thể trích xuất văn bản từ {', '.join(files_without_text)}. "
+                    warning_msg += "Có thể file PDF chỉ có hình ảnh, bị mã hóa, hoặc không có nội dung text. "
+                    warning_msg += "Bạn vẫn có thể xem file trên Cloudinary nhưng không thể chat với nội dung của file này."
+                
+                return Response({
+                    "success": True,
+                    "message": warning_msg,
+                    "files_processed": len(uploaded_files_info),
+                    "files_with_text": len(files_with_text),
+                    "files_without_text": len(files_without_text),
+                    "warning": True
+                }, status=status.HTTP_200_OK)
             
             total_pages = sum(pages_info.values())
             files_summary = "\n".join([f"  • {name}: {pages} trang" for name, pages in pages_info.items()])

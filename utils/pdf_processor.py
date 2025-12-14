@@ -95,17 +95,19 @@ class PDFProcessor:
         
         return chunks
     
-    def process_pdf(self, pdf_path: str) -> Tuple[List[Dict], int]:
+    def process_pdf(self, pdf_path: str, filename: str = None) -> Tuple[List[Dict], int]:
         """
         Xử lý toàn bộ PDF: extract text + chunking
         
         Args:
             pdf_path: Đường dẫn đến file PDF
+            filename: Tên file gốc (nếu None thì dùng basename của pdf_path)
             
         Returns:
             Tuple (list chunks, số trang)
         """
-        filename = os.path.basename(pdf_path)
+        if filename is None:
+            filename = os.path.basename(pdf_path)
         pages_data = self.extract_text_from_pdf(pdf_path)
         
         all_chunks = []
@@ -120,12 +122,13 @@ class PDFProcessor:
         logger.info(f"Đã tạo {len(all_chunks)} chunks từ {len(pages_data)} trang của {filename}")
         return all_chunks, len(pages_data)
     
-    def process_multiple_pdfs(self, pdf_paths: List[str]) -> Tuple[List[Dict], Dict[str, int]]:
+    def process_multiple_pdfs(self, pdf_paths: List[str], filenames: List[str] = None) -> Tuple[List[Dict], Dict[str, int]]:
         """
         Xử lý nhiều file PDF
         
         Args:
             pdf_paths: List đường dẫn đến các file PDF
+            filenames: List tên file gốc tương ứng (nếu None thì dùng basename của pdf_paths)
             
         Returns:
             Tuple (list tất cả chunks, dict {filename: số trang})
@@ -133,13 +136,16 @@ class PDFProcessor:
         all_chunks = []
         pages_info = {}
         
-        for pdf_path in pdf_paths:
+        if filenames is None:
+            filenames = [os.path.basename(pdf_path) for pdf_path in pdf_paths]
+        
+        for pdf_path, filename in zip(pdf_paths, filenames):
             try:
-                chunks, num_pages = self.process_pdf(pdf_path)
+                chunks, num_pages = self.process_pdf(pdf_path, filename=filename)
                 all_chunks.extend(chunks)
-                pages_info[os.path.basename(pdf_path)] = num_pages
+                pages_info[filename] = num_pages
             except Exception as e:
                 logger.error(f"Không thể xử lý {pdf_path}: {str(e)}")
-                pages_info[os.path.basename(pdf_path)] = 0
+                pages_info[filename] = 0
         
         return all_chunks, pages_info

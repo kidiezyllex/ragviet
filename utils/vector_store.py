@@ -164,20 +164,45 @@ class VectorStore:
         distances, indices = self.index.search(query_embedding, k)
         
         results = []
+        total_candidates = 0
+        filtered_by_filename = 0
+        filtered_by_user = 0
+        
         for idx, distance in zip(indices[0], distances[0]):
             if idx < len(self.metadata):
+                total_candidates += 1
                 meta = self.metadata[idx]
-                if filename and meta["filename"] != filename:
-                    continue
-                if user_id and meta.get("user_id") != user_id:
-                    continue
+                
+                if filename:
+                    if meta.get("filename") != filename:
+                        filtered_by_filename += 1
+                        continue
+                if user_id:
+                    meta_user_id = meta.get("user_id")
+                    if meta_user_id is not None and meta_user_id != user_id:
+                        filtered_by_user += 1
+                        continue
+                
                 result = meta.copy()
                 result["distance"] = float(distance)
                 results.append(result)
                 if len(results) >= top_k:
                     break
         
-        logger.info(f"Tìm được {len(results)} kết quả cho query: {query[:50]}... (filename filter: {filename}, user_id filter: {user_id})")
+        logger.info(
+            f"Tìm được {len(results)}/{total_candidates} kết quả cho query: {query[:50]}... "
+            f"(filename filter: {filename}, user_id filter: {user_id}, "
+            f"filtered by filename: {filtered_by_filename}, filtered by user: {filtered_by_user})"
+        )
+        
+        if len(results) == 0 and (filename or user_id):
+            # Lấy tất cả filenames unique trong vector store
+            unique_filenames = set(m.get('filename') for m in self.metadata)
+            logger.warning(
+                f"Không tìm được kết quả với filename='{filename}', user_id='{user_id}'. "
+                f"Các filenames có trong vector store: {sorted(unique_filenames)}"
+            )
+        
         return results
     
     def delete_by_filename(self, filename: str, user_id: Optional[str] = None):
@@ -218,6 +243,65 @@ class VectorStore:
         
         self.save_index()
         logger.info(f"Đã xóa file {filename}, còn lại {len(self.metadata)} chunks")
+    
+    def delete_temp_files_by_user(self, user_id: str, valid_filenames: List[str] = None):
+        """
+        Xóa tất cả chunks có tên file tạm (bắt đầu bằng 'tmp') của một user
+        và chỉ giữ lại các file có trong valid_filenames (nếu có)
+        
+        Args:
+            user_id: ID của user
+            valid_filenames: List các filename hợp lệ (nếu có, chỉ xóa các file không có trong list này)
+        """
+        import re
+        
+        # Pattern để nhận diện file tạm: bắt đầu bằng 'tmp' và có thể có số/chữ
+        temp_pattern = re.compile(r'^tmp[a-z0-9_]+\.pdf$', re.IGNORECASE)
+        
+        if valid_filenames:
+            valid_set = set(valid_filenames)
+            indices_to_keep = [
+                i for i, meta in enumerate(self.metadata)
+                if not (
+                    meta.get("user_id") == user_id and
+                    (temp_pattern.match(meta.get("filename", "")) or meta.get("filename") not in valid_set)
+                )
+            ]
+        else:
+            # Xóa tất cả file tạm của user
+            indices_to_keep = [
+                i for i, meta in enumerate(self.metadata)
+                if not (
+                    meta.get("user_id") == user_id and
+                    temp_pattern.match(meta.get("filename", ""))
+                )
+            ]
+        
+        deleted_count = len(self.metadata) - len(indices_to_keep)
+        
+        if deleted_count == 0:
+            logger.info(f"Không có file tạm nào để xóa cho user {user_id}")
+            return
+        
+        if len(indices_to_keep) == 0:
+            self._create_new_index()
+            self.save_index()
+            logger.info(f"Đã xóa tất cả chunks của user {user_id}, vector store giờ trống")
+            return
+        
+        new_metadata = [self.metadata[i] for i in indices_to_keep]
+        
+        texts = [meta["text"] for meta in new_metadata]
+        embeddings = self.encoder.encode(texts, show_progress_bar=True)
+        embeddings = np.array(embeddings).astype('float32')
+        
+        self._create_new_index()
+        self.index.add(embeddings)
+        self.metadata = new_metadata
+        self._build_file_index()
+        
+        self.save_index()
+        logger.info(f"Đã xóa {deleted_count} chunks (file tạm) của user {user_id}, còn lại {len(self.metadata)} chunks")
     
     def clear_all(self):
         """Xóa toàn bộ vector store"""
