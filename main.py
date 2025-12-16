@@ -38,6 +38,7 @@ app.storage.secret = STORAGE_SECRET
 ui.add_head_html("""
 <style>
 .nicegui-content{padding:0!important;}
+.q-field__control{background:white!important;}
 .q-message-text strong { font-weight: bold; }
 .math-formula {
     font-family: 'Times New Roman', serif;
@@ -76,6 +77,8 @@ class SessionState:
         self.selected_file: Optional[str] = None
         self.chat_session_id: Optional[str] = None
         self.pending_load_history: Optional[str] = None  # Chat session ID cần load
+        # Lưu thông tin số chunks cho mỗi file để kiểm tra tài liệu chưa được chunk
+        self.file_chunks: dict = {}
 
     @property
     def is_logged_in(self) -> bool:
@@ -180,6 +183,13 @@ def refresh_files_list() -> Tuple[str, List[str]]:
     if not result.get("success") or result.get("total_files", 0) == 0:
         return "Chưa có file nào được upload.", []
     files = result.get("files", [])
+    # Cập nhật map filename -> chunks vào session_state để dùng cho cảnh báo
+    try:
+        session_state.file_chunks = {
+            file["filename"]: file.get("chunks", 0) for file in files
+        }
+    except Exception:
+        session_state.file_chunks = {}
     files_list = "\n".join(
         [f"📄 {file['filename']}: {file['chunks']} chunks" for file in files]
     )
@@ -629,7 +639,7 @@ def render_shell(include_file_select: bool, content_builder):
     """Khung layout 1/4 sidebar - 3/4 main-content."""
     with ui.row().classes("w-full min-h-screen"):
         file_select = render_sidebar(include_file_select=include_file_select)
-        with ui.column().classes("min-h-screen p-6 gap-4 bg-white flex-1").style(
+        with ui.column().classes("min-h-screen p-6 gap-4 bg-white flex-1 border rounded-lg").style(
             "width:100%;max-width:100%;"
         ):
             content_builder(file_select)
@@ -651,11 +661,22 @@ def home_page():
 
         if file_select:
             def update_conv_label(e):
-                name = e.value or "Tất cả"
-                if name == "Tất cả":
+                raw_value = e.value or "Tất cả"
+                name = raw_value
+                if raw_value == "Tất cả":
                     name = "Tất cả tài liệu"
                 conv_label.set_text(f"Trò chuyện với: {name}")
-                ui.notify(f"Đã chọn tài liệu: {name}", type="positive")
+
+                # Cảnh báo nếu tài liệu được chọn chưa có chunks trong vector store / Mongo
+                if raw_value != "Tất cả":
+                    chunks_map = getattr(session_state, "file_chunks", {}) or {}
+                    chunks = chunks_map.get(raw_value, None)
+                    if chunks is not None and chunks == 0:
+                        notify_error("Tài liệu này chưa được xử lý (0 chunks). Vui lòng kiểm tra lại hoặc upload lại tài liệu.")
+                    else:
+                        ui.notify(f"Đã chọn tài liệu: {name}", type="positive")
+                else:
+                    ui.notify(f"Đã chọn tài liệu: {name}", type="positive")
 
             file_select.on_value_change(update_conv_label)
 
@@ -780,7 +801,7 @@ def home_page():
                     ):
                         ui.html(entry.get("html") or format_text(entry.get("text", "")), sanitize=False)
             else:
-                ui.label("Chưa có tin nhắn").classes("mx-auto my-36 text-gray-500")
+                ui.label("Upload tài liệu của bạn để bắt đầu cuộc trò chuyện nhé!").classes("mx-auto my-36 text-gray-500")
             ui.run_javascript('window.scrollTo(0, document.body.scrollHeight)')
 
         def add_message(role: str, text: str, stamp: Optional[str] = None, pending: bool = False) -> str:
