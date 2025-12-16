@@ -34,6 +34,9 @@ except Exception as e:
     vector_store = None
     reranker = None
 
+# Email tài khoản admin mặc định
+ADMIN_EMAIL = "adminragviet@gmail.com"
+
 
 def configure_cloudinary():
     """
@@ -357,7 +360,7 @@ class RegisterView(APIView):
 
                 resp = Response({
                     "success": True,
-                    "message": result['message'] + " Đang tự động đăng nhập...",
+                    "message": result['message'],
                     "session_id": login_result["session_id"],
                     "access_token": login_result.get("access_token", login_result["session_id"]),
                     "user": login_result["user"],
@@ -1160,3 +1163,252 @@ class FileViewView(APIView):
             "url": cloudinary_url,
             "filename": filename
         }, status=status.HTTP_200_OK)
+
+
+class AdminUsersView(APIView):
+    """API endpoint dành cho admin: lấy danh sách tất cả users."""
+
+    def get(self, request):
+        session_id = get_session_id_from_request(request)
+
+        if not session_id or not auth_manager:
+            return Response(
+                {"success": False, "message": "Vui lòng đăng nhập"},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        user = auth_manager.get_user_from_session(session_id)
+        if not user or user.get("email") != ADMIN_EMAIL or not database:
+            return Response(
+                {"success": False, "message": "Bạn không có quyền truy cập API admin"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        users = database.get_all_users()
+        return Response(
+            {
+                "success": True,
+                "users": users,
+                "total_users": len(users),
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class AdminFilesView(APIView):
+    """API endpoint dành cho admin: lấy danh sách tất cả tài liệu của mọi user."""
+
+    def get(self, request):
+        session_id = get_session_id_from_request(request)
+
+        if not session_id or not auth_manager:
+            return Response(
+                {"success": False, "message": "Vui lòng đăng nhập"},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        user = auth_manager.get_user_from_session(session_id)
+        if not user or user.get("email") != ADMIN_EMAIL or not database:
+            return Response(
+                {"success": False, "message": "Bạn không có quyền truy cập API admin"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        files = database.get_all_user_files()
+        return Response(
+            {
+                "success": True,
+                "files": files,
+                "total_files": len(files),
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class AdminUserStatusView(APIView):
+    """API endpoint dành cho admin: cập nhật trạng thái active của user."""
+
+    def post(self, request):
+        session_id = get_session_id_from_request(request)
+
+        if not session_id or not auth_manager:
+            return Response(
+                {"success": False, "message": "Vui lòng đăng nhập"},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        admin_user = auth_manager.get_user_from_session(session_id)
+        if not admin_user or admin_user.get("email") != ADMIN_EMAIL or not database:
+            return Response(
+                {"success": False, "message": "Bạn không có quyền truy cập API admin"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        user_id = request.data.get("user_id")
+        is_active = request.data.get("is_active")
+        if user_id is None or is_active is None:
+            return Response(
+                {"success": False, "message": "Thiếu user_id hoặc is_active"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        is_active_bool = bool(is_active)
+        ok = database.set_user_active(user_id, is_active_bool)
+        if ok:
+            return Response({"success": True}, status=status.HTTP_200_OK)
+        return Response(
+            {"success": False, "message": "Không thể cập nhật trạng thái user"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+
+class AdminUserDeleteView(APIView):
+    """API endpoint dành cho admin: xóa hoàn toàn một user và dữ liệu liên quan."""
+
+    def post(self, request):
+        session_id = get_session_id_from_request(request)
+
+        if not session_id or not auth_manager or not database or not vector_store:
+            return Response(
+                {"success": False, "message": "Hệ thống chưa sẵn sàng"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        admin_user = auth_manager.get_user_from_session(session_id)
+        if not admin_user or admin_user.get("email") != ADMIN_EMAIL:
+            return Response(
+                {"success": False, "message": "Bạn không có quyền truy cập API admin"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        user_id = request.data.get("user_id")
+        if not user_id:
+            return Response(
+                {"success": False, "message": "Thiếu user_id"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Xóa toàn bộ vectors của user trong vector_store
+        try:
+            stats = vector_store.get_stats(user_id=user_id)
+            filenames = list(stats.get("files", {}).keys())
+            for fname in filenames:
+                vector_store.delete_by_filename(fname, user_id=user_id)
+        except Exception as e:
+            logger.warning(f"Lỗi khi xóa vectors của user {user_id}: {e}")
+
+        ok = database.delete_user_data(user_id)
+        if ok:
+            msg = f"Đã xóa toàn bộ dữ liệu DB cho user {user_id}"
+            logger.info(msg)
+            return Response({"success": True, "message": msg}, status=status.HTTP_200_OK)
+        return Response(
+            {"success": False, "message": "Không thể xóa user"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+
+class AdminFileDeleteView(APIView):
+    """API endpoint dành cho admin: xóa một tài liệu cụ thể của user."""
+
+    def post(self, request):
+        session_id = get_session_id_from_request(request)
+
+        if not session_id or not auth_manager or not database or not vector_store:
+            return Response(
+                {"success": False, "message": "Hệ thống chưa sẵn sàng"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        admin_user = auth_manager.get_user_from_session(session_id)
+        if not admin_user or admin_user.get("email") != ADMIN_EMAIL:
+            return Response(
+                {"success": False, "message": "Bạn không có quyền truy cập API admin"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        user_id = request.data.get("user_id")
+        filename = request.data.get("filename", "").strip()
+        if not user_id or not filename:
+            return Response(
+                {"success": False, "message": "Thiếu user_id hoặc filename"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        file_info = database.get_user_file(user_id, filename)
+        if not file_info:
+            return Response(
+                {"success": False, "message": "File không tồn tại"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        try:
+            import cloudinary
+            import cloudinary.uploader
+
+            success, error_msg = configure_cloudinary()
+            if not success:
+                return Response(
+                    {"success": False, "message": error_msg},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
+
+            try:
+                cloudinary_public_id = file_info.get("cloudinary_public_id")
+                if cloudinary_public_id:
+                    cloudinary.uploader.destroy(cloudinary_public_id, resource_type="raw")
+                    logger.info(f"[ADMIN] Đã xóa file {filename} từ Cloudinary (user {user_id})")
+            except Exception as cloudinary_error:
+                logger.warning(f"[ADMIN] Không thể xóa file từ Cloudinary: {cloudinary_error}")
+
+            vector_store.delete_by_filename(filename, user_id=user_id)
+            database.delete_user_file(user_id, filename)
+
+            return Response(
+                {"success": True, "message": f"Đã xóa file {filename} của user {user_id}"},
+                status=status.HTTP_200_OK,
+            )
+        except Exception as e:
+            logger.error(f"[ADMIN] Lỗi khi xóa file: {e}")
+            return Response(
+                {"success": False, "message": f"Lỗi: {e}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+
+class AdminFileDownloadLogView(APIView):
+    """API endpoint dành cho admin: log sự kiện tải file của user."""
+
+    def post(self, request):
+        session_id = get_session_id_from_request(request)
+
+        if not session_id or not auth_manager or not database:
+            return Response(
+                {"success": False, "message": "Hệ thống chưa sẵn sàng"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        admin_user = auth_manager.get_user_from_session(session_id)
+        if not admin_user or admin_user.get("email") != ADMIN_EMAIL:
+            return Response(
+                {"success": False, "message": "Bạn không có quyền truy cập API admin"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        user_id = request.data.get("user_id")
+        filename = request.data.get("filename", "").strip()
+        if not user_id or not filename:
+            return Response(
+                {"success": False, "message": "Thiếu user_id hoặc filename"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Không nhất thiết phải check tồn tại file, chỉ cần log hành vi tải
+        logger.info(f"[ADMIN] Tải file '{filename}' của user {user_id}")
+        return Response(
+            {
+                "success": True,
+                "message": f"Đã ghi log tải file {filename} của user {user_id}",
+            },
+            status=status.HTTP_200_OK,
+        )

@@ -25,5 +25,13 @@ urlpatterns = [
     path('files/delete/', views.FileDeleteView.as_view(), name='file-delete'),
     path('files/clear-all/', views.FileClearAllView.as_view(), name='file-clear-all'),
     path('files/view/<str:filename>/', views.FileViewView.as_view(), name='file-view'),
+
+    # Admin endpoints
+    path('admin/users/', views.AdminUsersView.as_view(), name='admin-users'),
+    path('admin/files/', views.AdminFilesView.as_view(), name='admin-files'),
+    path('admin/users/status/', views.AdminUserStatusView.as_view(), name='admin-user-status'),
+    path('admin/users/delete/', views.AdminUserDeleteView.as_view(), name='admin-user-delete'),
+    path('admin/files/delete/', views.AdminFileDeleteView.as_view(), name='admin-file-delete'),
+    path('admin/files/download-log/', views.AdminFileDownloadLogView.as_view(), name='admin-file-download-log'),
 ]
 

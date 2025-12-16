@@ -9,6 +9,7 @@ import logging
 from datetime import datetime, timezone
 import hashlib
 import secrets
+from bson import ObjectId
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -709,5 +710,95 @@ class Database:
             return result.modified_count > 0
         except Exception as e:
             logger.error(f"Lỗi khi cập nhật chunks: {str(e)}")
+            return False
+
+    def get_all_users(self) -> List[Dict]:
+        """Lấy danh sách tất cả users (dành cho admin)."""
+        try:
+            users = list(self.db.users.find({}).sort("created_at", -1))
+            result: List[Dict] = []
+            for user in users:
+                user_doc = {
+                    "id": str(user.get("_id")),
+                    "username": user.get("username"),
+                    "email": user.get("email"),
+                    "is_active": user.get("is_active", True),
+                    "created_at": _format_timestamp(user.get("created_at")),
+                }
+                result.append(user_doc)
+            return result
+        except Exception as e:
+            logger.error(f"Lỗi khi lấy danh sách users: {str(e)}")
+            return []
+
+    def get_all_user_files(self) -> List[Dict]:
+        """Lấy danh sách tất cả files của mọi user (dành cho admin)."""
+        try:
+            files = list(self.db.user_files.find({}).sort("uploaded_at", -1))
+            user_ids = {f.get("user_id") for f in files if f.get("user_id")}
+
+            # Map user_id -> (email, username)
+            user_map: Dict[str, Dict[str, Any]] = {}
+            valid_object_ids = [ObjectId(uid) for uid in user_ids if isinstance(uid, str) and len(uid) == 24]
+            if valid_object_ids:
+                for user in self.db.users.find({"_id": {"$in": valid_object_ids}}):
+                    key = str(user.get("_id"))
+                    user_map[key] = {
+                        "email": user.get("email"),
+                        "username": user.get("username"),
+                    }
+
+            result_files: List[Dict] = []
+            for f in files:
+                uid = f.get("user_id")
+                user_info = user_map.get(uid, {})
+                result_files.append(
+                    {
+                        "id": str(f.get("_id")),
+                        "user_id": uid,
+                        "username": user_info.get("username"),
+                        "email": user_info.get("email"),
+                        "filename": f.get("filename"),
+                        "total_chunks": f.get("total_chunks", f.get("total_chunks", 0)),
+                        "uploaded_at": _format_timestamp(f.get("uploaded_at")),
+                        "cloudinary_url": f.get("cloudinary_url"),
+                    }
+                )
+            return result_files
+        except Exception as e:
+            logger.error(f"Lỗi khi lấy danh sách tất cả files: {str(e)}")
+            return []
+
+    def set_user_active(self, user_id: str, is_active: bool) -> bool:
+        """Cập nhật trạng thái active của user (dành cho admin)."""
+        try:
+            result = self.db.users.update_one(
+                {"_id": ObjectId(user_id)},
+                {"$set": {"is_active": is_active}},
+            )
+            return result.modified_count > 0
+        except Exception as e:
+            logger.error(f"Lỗi khi cập nhật trạng thái user: {str(e)}")
+            return False
+
+    def delete_user_data(self, user_id: str) -> bool:
+        """
+        Xóa toàn bộ dữ liệu liên quan đến user (trừ vector store, xử lý ở lớp trên):
+        - users, auth_sessions, chat_history, chat_sessions, user_files.
+        """
+        try:
+            # Xóa user
+            self.db.users.delete_one({"_id": ObjectId(user_id)})
+            # Xóa auth sessions
+            self.db.auth_sessions.delete_many({"user_id": user_id})
+            # Xóa chat history và sessions
+            self.db.chat_history.delete_many({"user_id": user_id})
+            self.db.chat_sessions.delete_many({"user_id": user_id})
+            # Xóa thông tin file
+            self.db.user_files.delete_many({"user_id": user_id})
+            logger.info(f"Đã xóa toàn bộ dữ liệu DB cho user {user_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Lỗi khi xóa dữ liệu user: {str(e)}")
             return False
 

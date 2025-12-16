@@ -8,6 +8,7 @@ from uuid import uuid4
 from typing import List, Optional, Tuple
 import logging
 
+import httpx
 from dotenv import load_dotenv
 from nicegui import app, ui, context
 
@@ -29,11 +30,17 @@ from api_client import (
     api_upload_files,
     api_verify_session,
     api_view_file,
+    api_admin_get_users,
+    api_admin_get_files,
+    api_admin_set_user_active,
+    api_admin_delete_user,
+    api_admin_delete_file,
 )
 
 load_dotenv()
 
 STORAGE_SECRET = os.getenv("STORAGE_SECRET", "ragviet-dev-secret")
+DJANGO_API_URL = os.getenv("DJANGO_API_URL", "http://localhost:8000/api")
 app.storage.secret = STORAGE_SECRET
 ui.add_head_html("""
 <style>
@@ -150,6 +157,48 @@ def restore_session_from_storage():
         return True
     clear_session_storage()
     return False
+
+
+async def async_api_request(
+    method: str,
+    path: str,
+    json_data: Optional[dict] = None,
+) -> dict:
+    """
+    Helper dùng httpx.AsyncClient để gọi API Django (kiểu như ví dụ ZenQuotes).
+
+    method: "GET", "POST", ...
+    path:   "/admin/users/", "/admin/files/", ...
+    """
+    url = f"{DJANGO_API_URL}{path}"
+    headers = {"Content-Type": "application/json"}
+
+    token = session_state.access_token or session_state.session_id
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.request(method, url, json=json_data, headers=headers)
+        try:
+            data = response.json()
+        except Exception:
+            return {
+                "success": False,
+                "message": f"Lỗi từ server (status {response.status_code})",
+                "status_code": response.status_code,
+            }
+        if isinstance(data, dict) and "success" not in data:
+            data["success"] = 200 <= response.status_code < 300
+            data.setdefault("status_code", response.status_code)
+        return data
+    except httpx.RequestError as e:
+        logger.error(f"Lỗi kết nối API ({method} {url}): {e}")
+        return {
+            "success": False,
+            "message": f"Lỗi kết nối API: {str(e)}",
+            "status_code": None,
+        }
 
 def notify_success(msg: str, notify_type: str = "positive"):
     ui.notify(msg, type=notify_type)
@@ -435,7 +484,11 @@ def handle_login(email: str, password: str):
         session_state.chat_session_id = result.get("chat_session_id")
         save_session_to_storage()
         notify_success(result.get("message", "Đăng nhập thành công"))
-        ui.navigate.to("/")
+        # Nếu là admin thì chuyển sang trang admin
+        if session_state.user and session_state.user.get("email") == "adminragviet@gmail.com":
+            ui.navigate.to("/admin")
+        else:
+            ui.navigate.to("/")
     else:
         status_code = result.get("status_code")
         msg = (
@@ -471,15 +524,10 @@ def handle_logout():
     notify_success("Đã đăng xuất")
     ui.navigate.to("/login")
 
-
-# -------------------------
-# UI building blocks
-# -------------------------
 def render_navbar():
-    # Đảm bảo khôi phục session cho mỗi lần render navbar
     restore_session_from_storage()
     with ui.header().classes("items-center justify-between px-4"):
-        ui.label("RAGViet").classes("text-xl font-bold")
+        ui.label("Trang quản trị viên").classes("text-lg font-bold")
         with ui.row().classes("items-center gap-2"):
             ui.button("Trang chủ", on_click=lambda: ui.navigate.to("/")).props("flat")
             ui.button("Chat", on_click=lambda: ui.navigate.to("/chat")).props("flat")
@@ -929,7 +977,6 @@ def home_page():
 
 @ui.page("/login")
 def login_page():
-    render_navbar()
     with ui.row().classes("w-full min-h-screen items-center justify-center bg-gray-50"):
         with ui.column().classes("items-center justify-center gap-4 w-full max-w-md"):
             ui.markdown("## Đăng nhập").classes("self-center")
@@ -948,7 +995,6 @@ def login_page():
 
 @ui.page("/register")
 def register_page():
-    render_navbar()
     with ui.row().classes("w-full min-h-screen items-center justify-center bg-gray-50"):
         with ui.column().classes("items-center justify-center gap-4 w-full max-w-md"):
             ui.markdown("## Đăng ký").classes("self-center")
@@ -968,7 +1014,6 @@ def register_page():
 
 @ui.page("/forgot-password")
 def forgot_page():
-    render_navbar()
     with ui.row().classes("w-full min-h-screen items-center justify-center bg-gray-50"):
         with ui.column().classes("items-center justify-center gap-4 w-full max-w-md"):
             ui.markdown("## Quên mật khẩu").classes("self-center")
@@ -989,7 +1034,6 @@ def forgot_page():
 
 @ui.page("/reset-password")
 def reset_page():
-    render_navbar()
     ui.markdown("## Đặt lại mật khẩu")
     token = ui.input("Mã OTP").classes("w-96")
     new_pass = ui.input("Mật khẩu mới", password=True).classes("w-96")
@@ -1117,6 +1161,198 @@ def documents_page():
         ui.button("🗑️ Xóa toàn bộ", color="negative", on_click=clear_all)
 
     refresh()
+
+
+@ui.page("/admin")
+def admin_page():
+    """Trang quản trị: quản lý người dùng và tài liệu."""
+    if not require_auth():
+        return
+    # Chỉ cho phép email admin truy cập
+    if not (session_state.user and session_state.user.get("email") == "adminragviet@gmail.com"):
+        ui.label("Bạn không có quyền truy cập trang quản trị.").classes("p-4 text-negative")
+        return
+
+    render_navbar()
+    ui.markdown("## Trang quản trị").classes("px-6 pt-4")
+
+    with ui.row().classes("w-full px-6 pb-6 gap-4"):
+        # Quản lý người dùng
+        with ui.card().classes("flex-1 p-4 gap-3"):
+            ui.label("Quản lý người dùng").classes("text-lg font-semibold mb-2")
+
+            users_grid = ui.aggrid(
+                {
+                    "columnDefs": [
+                        {"field": "username", "headerName": "Username", "sortable": True},
+                        {"field": "email", "headerName": "Email", "sortable": True},
+                        {"field": "is_active", "headerName": "Active", "sortable": True},
+                        {"field": "created_at", "headerName": "Tạo lúc", "sortable": True},
+                        {"field": "id", "headerName": "User ID"},
+                    ],
+                    "rowData": [],
+                    "rowSelection": {"mode": "multiRow"},
+                }
+            ).classes("w-full h-80")
+
+            async def load_users():
+                """Tải danh sách users (gọi API bằng httpx.AsyncClient)."""
+                resp = await async_api_request("GET", "/admin/users/")
+                print("DEBUG ADMIN USERS:", resp)
+                if resp.get("success"):
+                    users_grid.options["rowData"] = resp.get("users", [])
+                    users_grid.update()
+                    notify_success("Đã làm mới danh sách người dùng")
+                else:
+                    logger.error(f"Không thể tải danh sách người dùng: {resp}")
+
+            async def set_users_active(active: bool):
+                rows = await users_grid.get_selected_rows()
+                if not rows:
+                    notify_error("Vui lòng chọn ít nhất một user")
+                    return
+                for row in rows:
+                    resp = await async_api_request(
+                        "POST",
+                        "/admin/users/status/",
+                        {"user_id": row.get("id"), "is_active": active},
+                    )
+                    if not resp.get("success"):
+                        notify_error(resp.get("message", "Không thể cập nhật trạng thái user"))
+                        return
+                if active:
+                    notify_success("Đã mở khóa user đã chọn")
+                else:
+                    notify_success("Đã khóa user đã chọn")
+                # Sau khi cập nhật trạng thái, tải lại danh sách users
+                await load_users()
+
+            async def delete_selected_users():
+                rows = await users_grid.get_selected_rows()
+                if not rows:
+                    notify_error("Vui lòng chọn ít nhất một user để xóa")
+                    return
+                last_msg = None
+                for row in rows:
+                    resp = await async_api_request(
+                        "POST",
+                        "/admin/users/delete/",
+                        {"user_id": row.get("id")},
+                    )
+                    if not resp.get("success"):
+                        notify_error(resp.get("message", "Không thể xóa user"))
+                        return
+                    last_msg = resp.get("message") or last_msg
+                # Ưu tiên hiển thị message chi tiết từ API (vd: "Đã xóa toàn bộ dữ liệu DB cho user ...")
+                if last_msg:
+                    notify_success(last_msg)
+                else:
+                    notify_success(f"Đã xóa {len(rows)} user")
+                # Sau khi xóa, tải lại danh sách users
+                await load_users()
+
+            with ui.row().classes("gap-2 mt-2"):
+                ui.button("🔄 Làm mới người dùng", on_click=lambda: asyncio.create_task(load_users()))
+                ui.button("🔒 Khoá user", color="warning",
+                          on_click=lambda: asyncio.create_task(set_users_active(False)))
+                ui.button("🔓 Mở khoá user", color="positive",
+                          on_click=lambda: asyncio.create_task(set_users_active(True)))
+                ui.button("🗑️ Xóa user đã chọn", color="negative",
+                          on_click=lambda: asyncio.create_task(delete_selected_users()))
+
+        # Quản lý tài liệu
+        with ui.card().classes("flex-1 p-4 gap-3"):
+            ui.label("Quản lý tài liệu").classes("text-lg font-semibold mb-2")
+
+            files_grid = ui.aggrid(
+                {
+                    "columnDefs": [
+                        {"field": "filename", "headerName": "Tên file", "sortable": True},
+                        {"field": "total_chunks", "headerName": "Chunks", "sortable": True},
+                        {"field": "username", "headerName": "Username", "sortable": True},
+                        {"field": "email", "headerName": "Email", "sortable": True},
+                        {"field": "uploaded_at", "headerName": "Upload lúc", "sortable": True},
+                        {"field": "user_id", "headerName": "User ID"},
+                    ],
+                    "rowData": [],
+                    "rowSelection": {"mode": "multiRow"},
+                }
+            ).classes("w-full h-80")
+
+            async def load_files():
+                """Tải danh sách tài liệu (gọi API bằng httpx.AsyncClient)."""
+                resp = await async_api_request("GET", "/admin/files/")
+                print("DEBUG ADMIN FILES:", resp)
+                if resp.get("success"):
+                    files_grid.options["rowData"] = resp.get("files", [])
+                    files_grid.update()
+                    notify_success("Đã làm mới danh sách tài liệu")
+                else:
+                    logger.error(f"Không thể tải danh sách tài liệu: {resp}")
+
+            async def delete_selected_files():
+                rows = await files_grid.get_selected_rows()
+                if not rows:
+                    notify_error("Vui lòng chọn ít nhất một tài liệu để xóa")
+                    return
+                last_msg = None
+                for row in rows:
+                    resp = await async_api_request(
+                        "POST",
+                        "/admin/files/delete/",
+                        {
+                            "user_id": row.get("user_id"),
+                            "filename": row.get("filename"),
+                        },
+                    )
+                    if not resp.get("success"):
+                        notify_error(resp.get("message", "Không thể xóa tài liệu"))
+                        return
+                    last_msg = resp.get("message") or last_msg
+                # Ưu tiên thông báo chi tiết từ backend nếu có
+                if last_msg:
+                    notify_success(last_msg)
+                else:
+                    notify_success(f"Đã xóa {len(rows)} tài liệu")
+                await load_files()
+
+            async def download_selected_files():
+                rows = await files_grid.get_selected_rows()
+                if not rows:
+                    notify_error("Vui lòng chọn ít nhất một tài liệu để tải")
+                    return
+                notify_success("Đang xử lý tải tài liệu đã chọn...")
+                opened = 0
+                for row in rows:
+                    await async_api_request(
+                        "POST",
+                        "/admin/files/download-log/",
+                        {
+                            "user_id": row.get("user_id"),
+                            "filename": row.get("filename"),
+                        },
+                    )
+                    url = row.get("cloudinary_url")
+                    if url:
+                        ui.run_javascript(f'window.open("{url}", "_blank")')
+                        opened += 1
+                if opened == 0:
+                    notify_error("Không tìm thấy URL để tải cho tài liệu đã chọn")
+                else:
+                    notify_success(f"Đã mở {opened} tài liệu trong tab mới")
+
+            with ui.row().classes("gap-2 mt-2"):
+                ui.button("🔄 Làm mới tài liệu", on_click=lambda: asyncio.create_task(load_files()))
+                ui.button("⬇️ Tải tài liệu đã chọn", color="primary",
+                          on_click=lambda: asyncio.create_task(download_selected_files()))
+                ui.button("🗑️ Xóa tài liệu đã chọn", color="negative",
+                          on_click=lambda: asyncio.create_task(delete_selected_files()))
+
+    async def _initial_admin_load():
+        await load_users()
+        await load_files()
+
+    ui.timer(0.1, lambda: asyncio.create_task(_initial_admin_load()), once=True)
 
 
 @ui.page("/chat")

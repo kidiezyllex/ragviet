@@ -312,3 +312,86 @@ def api_view_file(filename, session_id=None):
         return {"success": False, "message": f"Lỗi kết nối API: {str(e)}"}
 
 
+def api_admin_get_users(session_id):
+    """Gọi API admin lấy danh sách tất cả users."""
+    try:
+        response = requests.get(
+            f'{API_BASE_URL}/admin/users/',
+            headers=get_auth_headers(session_id),
+            timeout=10,
+        )
+        if response.status_code == 200:
+            return response.json()
+        else:
+            return {"success": False, "users": [], "message": "Không thể lấy danh sách users"}
+    except Exception as e:
+        return {"success": False, "users": [], "message": f"Lỗi kết nối API: {str(e)}"}
+
+
+def api_admin_get_files(session_id):
+    """Gọi API admin lấy danh sách tất cả tài liệu của mọi user."""
+    try:
+        response = requests.get(
+            f'{API_BASE_URL}/admin/files/',
+            headers=get_auth_headers(session_id),
+            timeout=10,
+        )
+        if response.status_code == 200:
+            return response.json()
+        else:
+            return {"success": False, "files": [], "message": "Không thể lấy danh sách tài liệu"}
+    except Exception as e:
+        return {"success": False, "files": [], "message": f"Lỗi kết nối API: {str(e)}"}
+
+
+def api_admin_set_user_active(user_id, is_active, session_id):
+    """Gọi API admin cập nhật trạng thái active của user."""
+    try:
+        response = requests.post(
+            f'{API_BASE_URL}/admin/users/status/',
+            json={"user_id": user_id, "is_active": is_active},
+            headers=get_auth_headers(session_id),
+            timeout=10,
+        )
+        if response.status_code == 200:
+            return response.json()
+        else:
+            return {"success": False, "message": "Không thể cập nhật trạng thái user"}
+    except Exception as e:
+        return {"success": False, "message": f"Lỗi kết nối API: {str(e)}"}
+
+
+def api_admin_delete_user(user_id, session_id):
+    """Gọi API admin xóa user và dữ liệu liên quan."""
+    try:
+        response = requests.post(
+            f'{API_BASE_URL}/admin/users/delete/',
+            json={"user_id": user_id},
+            headers=get_auth_headers(session_id),
+            timeout=10,
+        )
+        if response.status_code == 200:
+            return response.json()
+        else:
+            return {"success": False, "message": "Không thể xóa user"}
+    except Exception as e:
+        return {"success": False, "message": f"Lỗi kết nối API: {str(e)}"}
+
+
+def api_admin_delete_file(user_id, filename, session_id):
+    """Gọi API admin xóa file cụ thể của một user."""
+    try:
+        response = requests.post(
+            f'{API_BASE_URL}/admin/files/delete/',
+            json={"user_id": user_id, "filename": filename},
+            headers=get_auth_headers(session_id),
+            timeout=10,
+        )
+        if response.status_code == 200:
+            return response.json()
+        else:
+            return {"success": False, "message": "Không thể xóa file"}
+    except Exception as e:
+        return {"success": False, "message": f"Lỗi kết nối API: {str(e)}"}
+
+
