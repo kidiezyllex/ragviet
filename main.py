@@ -910,7 +910,9 @@ def home_page():
                 if send_btn is not None:
                     send_btn.props(remove="loading")
 
-        with ui.column().classes("w-full max-w-3xl mx-auto gap-3 flex-1 items-stretch"):
+        with ui.column().classes("w-full max-w-3xl mx-auto gap-3 flex-1 items-stretch").style(
+            "height: 100vh; max-height: 100vh; overflow-y: auto;"
+        ):
             chat_messages_view()
         ui.timer(0.05, chat_messages_view.refresh, once=True)
 
