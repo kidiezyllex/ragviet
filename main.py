@@ -126,7 +126,6 @@ def clear_session_storage():
 
 def restore_session_from_storage():
     """Khôi phục session từ local storage nếu còn hợp lệ."""
-    # Nếu đã có session thì không cần restore
     if session_state.is_logged_in:
         return True
     
@@ -142,12 +141,13 @@ def restore_session_from_storage():
         session_state.access_token = stored_session
         session_state.user = verify.get("user")
         session_state.chat_session_id = verify.get("chat_session_id")
+        print(f"DEBUG: Restored session. chat_session_id={session_state.chat_session_id}")
         return True
     clear_session_storage()
     return False
 
-def notify_success(msg: str):
-    ui.notify(msg, type="positive")
+def notify_success(msg: str, notify_type: str = "positive"):
+    ui.notify(msg, type=notify_type)
 
 
 def notify_error(msg: str):
@@ -558,8 +558,8 @@ def render_sidebar(include_file_select: bool = True):
         with ui.card().classes("w-full shadow-none border p-3 gap-2"):
             ui.label("📜 Lịch sử chat").classes("text-sm font-semibold mb-2")
             chat_history_sidebar = ui.select(
-                options=[],
-                label="Chọn cuộc trò chuyện",
+                options={}, 
+                label="Chọn cuộc trò chuyện", 
                 value=None
             ).props("clearable dense").classes("w-full").style("font-size: 0.85rem")
             
@@ -571,28 +571,37 @@ def render_sidebar(include_file_select: bool = True):
                         sessions = sessions_result.get("sessions", [])
                         options = {}
                         for session in sessions:
-                            session_id = session.get("session_id", "")
+                            s_id = session.get("session_id")
+                            if not s_id:
+                                continue
                             title = session.get("title", "Chat không có tiêu đề")
-                            created_at = session.get("created_at", "")
-                            display_text = f"{title[:25]}..." if len(title) > 25 else title
-                            if created_at:
-                                try:
-                                    from datetime import datetime
-                                    if isinstance(created_at, str):
-                                        dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-                                        display_text += f" ({dt.strftime('%d/%m %H:%M')})"
-                                except:
-                                    pass
-                            options[session_id] = display_text
+                            time_str = session.get("updated_at") or session.get("created_at", "")
+                            
+                            display_text = f"{title[:30]}..." if len(title) > 30 else title
+                            if time_str:
+                                display_text += f" ({time_str})"
+                            options[s_id] = display_text
+                        
                         chat_history_sidebar.options = options
+                        
+                        # Priority: pending load history -> current chat session
+                        target_id = session_state.pending_load_history or session_state.chat_session_id
+                        print(f"DEBUG: Refresh sidebar. pending={session_state.pending_load_history}, current={session_state.chat_session_id}, target={target_id}")
+                        if target_id and target_id in options:
+                            if chat_history_sidebar.value != target_id:
+                                chat_history_sidebar.value = target_id
+                        
+                        chat_history_sidebar.update()
                 except Exception as e:
                     logger.error(f"Error refreshing sidebar history: {e}")
             
             def on_sidebar_history_change(e):
-                selected_session_id = e.value
-                if selected_session_id:
+                val = e.value
+                current = session_state.pending_load_history or session_state.chat_session_id
+                print(f"DEBUG: Sidebar change event. Val={val}, Current={current}, Equal={val==current}")
+                if val and val != current:
                     # Set flag để load history khi trang load
-                    session_state.pending_load_history = selected_session_id
+                    session_state.pending_load_history = val
                     # Navigate về trang chủ
                     ui.navigate.to("/")
             
@@ -657,6 +666,7 @@ def home_page():
                 
                 # Lấy lịch sử chat
                 history_result = api_get_chat_history(chat_session_id, session_state.session_id)
+                print(f"DEBUG: Loaded chat history (session {chat_session_id}): {history_result}")
                 
                 if history_result.get("success"):
                     messages = history_result.get("messages", [])
@@ -932,7 +942,7 @@ def forgot_page():
     with ui.row().classes("w-full min-h-screen items-center justify-center bg-gray-50"):
         with ui.column().classes("items-center justify-center gap-4 w-full max-w-md"):
             ui.markdown("## Quên mật khẩu").classes("self-center")
-            with ui.card().classes("gap-3 w-full p-6 shadow-md"):
+            with ui.card().classes("gap-3 w-full p-6 shadow-md").style("border: 1px solid #ccc"):
                 email = ui.input("Email đã đăng ký").classes("w-full")
 
                 def submit():

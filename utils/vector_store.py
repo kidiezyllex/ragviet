@@ -1,17 +1,28 @@
 """
 Module quản lý FAISS vector store và embeddings
 """
-import faiss
-import numpy as np
 import json
 import os
 from collections import defaultdict
 from typing import List, Dict, Tuple, Optional
-from sentence_transformers import SentenceTransformer
 import logging
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Try to import heavy dependencies
+try:
+    import faiss
+    import numpy as np
+    from sentence_transformers import SentenceTransformer
+    HAS_AI_LIBS = True
+except ImportError as e:
+    logger.warning(f"Could not import AI libraries (faiss, numpy, sentence-transformers): {e}")
+    HAS_AI_LIBS = False
+    faiss = None
+    np = None
+    SentenceTransformer = None
+
 
 
 class VectorStore:
@@ -35,29 +46,37 @@ class VectorStore:
         self.metadata = []
         self.metadata_by_file = defaultdict(list)
         
-        logger.info(f"Đang tải embedding model: {embedding_model_name}")
-        try:
-            self.encoder = SentenceTransformer(embedding_model_name)
-            logger.info(f"Đã tải model {embedding_model_name} thành công")
-        except Exception as e:
-            logger.warning(f"Không thể tải {embedding_model_name}: {str(e)}")
+        if HAS_AI_LIBS:
+            logger.info(f"Đang tải embedding model: {embedding_model_name}")
             try:
-                fallback_model = "VoVanPhuc/sup-SimCSE-VietNamese-phobert-base"
-                logger.info(f"Thử tải model dự phòng: {fallback_model}")
-                self.encoder = SentenceTransformer(fallback_model)
-                logger.info(f"Đã tải model dự phòng {fallback_model} thành công")
-            except Exception as e2:
-                logger.warning(f"Không thể tải SimCSE-VietNamese: {str(e2)}")
+                self.encoder = SentenceTransformer(embedding_model_name)
+                logger.info(f"Đã tải model {embedding_model_name} thành công")
+            except Exception as e:
+                logger.warning(f"Không thể tải {embedding_model_name}: {str(e)}")
                 try:
-                    fallback_model2 = "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
-                    logger.info(f"Thử tải model dự phòng cuối cùng: {fallback_model2}")
-                    self.encoder = SentenceTransformer(fallback_model2)
-                    logger.info(f"Đã tải model dự phòng {fallback_model2} thành công")
-                except Exception as e3:
-                    logger.error(f"Lỗi khi tải tất cả embedding models: {str(e3)}")
-                    raise
+                    fallback_model = "VoVanPhuc/sup-SimCSE-VietNamese-phobert-base"
+                    logger.info(f"Thử tải model dự phòng: {fallback_model}")
+                    self.encoder = SentenceTransformer(fallback_model)
+                    logger.info(f"Đã tải model dự phòng {fallback_model} thành công")
+                except Exception as e2:
+                    logger.warning(f"Không thể tải SimCSE-VietNamese: {str(e2)}")
+                    try:
+                        fallback_model2 = "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
+                        logger.info(f"Thử tải model dự phòng cuối cùng: {fallback_model2}")
+                        self.encoder = SentenceTransformer(fallback_model2)
+                        logger.info(f"Đã tải model dự phòng {fallback_model2} thành công")
+                    except Exception as e3:
+                        logger.error(f"Lỗi khi tải tất cả embedding models: {str(e3)}")
+                        self.encoder = None
+        else:
+            self.encoder = None
+            logger.warning("AI Libraries missing - VectorStore operating in dummy mode")
         
-        self.dimension = self.encoder.get_sentence_embedding_dimension()
+        if self.encoder:
+            self.dimension = self.encoder.get_sentence_embedding_dimension()
+        else:
+            self.dimension = 768 # Dummy dimension
+            
         self.load_index()
 
     def _build_file_index(self):
@@ -70,9 +89,10 @@ class VectorStore:
     
     def load_index(self):
         """Load FAISS index và metadata từ disk"""
-        if os.path.exists(self.index_path) and os.path.exists(self.metadata_path):
+        if HAS_AI_LIBS and os.path.exists(self.index_path) and os.path.exists(self.metadata_path):
             try:
                 self.index = faiss.read_index(self.index_path)
+
                 with open(self.metadata_path, 'r', encoding='utf-8') as f:
                     self.metadata = json.load(f)
                 self._build_file_index()
@@ -85,7 +105,11 @@ class VectorStore:
     
     def _create_new_index(self):
         """Tạo FAISS index mới"""
-        self.index = faiss.IndexFlatL2(self.dimension)
+        if HAS_AI_LIBS:
+            self.index = faiss.IndexFlatL2(self.dimension)
+        else:
+            self.index = None
+
         self.metadata = []
         self.metadata_by_file = defaultdict(list)
         logger.info(f"Đã tạo FAISS index mới với dimension {self.dimension}")
@@ -94,12 +118,15 @@ class VectorStore:
         """Lưu FAISS index và metadata ra disk"""
         try:
             os.makedirs(os.path.dirname(self.index_path), exist_ok=True)
-            faiss.write_index(self.index, self.index_path)
+            if self.index and HAS_AI_LIBS:
+                faiss.write_index(self.index, self.index_path)
+
             
             with open(self.metadata_path, 'w', encoding='utf-8') as f:
                 json.dump(self.metadata, f, ensure_ascii=False, indent=2)
             
-            logger.info(f"Đã lưu index với {self.index.ntotal} vectors")
+            
+            logger.info(f"Đã lưu index với {self.index.ntotal if self.index else 0} vectors")
         except Exception as e:
             logger.error(f"Lỗi khi lưu index: {str(e)}")
             raise
@@ -118,10 +145,13 @@ class VectorStore:
         texts = [chunk["text"] for chunk in chunks]
         logger.info(f"Đang tạo embeddings cho {len(texts)} chunks...")
         
-        embeddings = self.encoder.encode(texts, show_progress_bar=True)
-        embeddings = np.array(embeddings).astype('float32')
-        
-        self.index.add(embeddings)
+        if self.encoder and self.index:
+            embeddings = self.encoder.encode(texts, show_progress_bar=True)
+            embeddings = np.array(embeddings).astype('float32')
+            self.index.add(embeddings)
+        else:
+            logger.warning("AI features disabled. Document text saved but not indexed.")
+
         
         for chunk in chunks:
             meta_entry = {
@@ -152,10 +182,13 @@ class VectorStore:
         Returns:
             List các chunk tìm được
         """
-        if self.index.ntotal == 0:
-            logger.warning("Vector store trống, không có dữ liệu để tìm kiếm")
+        if not self.index or self.index.ntotal == 0:
+            logger.warning("Vector store trống hoặc chưa khởi tạo")
             return []
         
+        if not self.encoder:
+            return []
+
         query_embedding = self.encoder.encode([query])
         query_embedding = np.array(query_embedding).astype('float32')
         
@@ -233,11 +266,13 @@ class VectorStore:
         new_metadata = [self.metadata[i] for i in indices_to_keep]
         
         texts = [meta["text"] for meta in new_metadata]
-        embeddings = self.encoder.encode(texts, show_progress_bar=True)
-        embeddings = np.array(embeddings).astype('float32')
         
         self._create_new_index()
-        self.index.add(embeddings)
+        if self.encoder and self.index:
+            embeddings = self.encoder.encode(texts, show_progress_bar=True)
+            embeddings = np.array(embeddings).astype('float32')
+            self.index.add(embeddings)
+
         self.metadata = new_metadata
         self._build_file_index()
         
@@ -292,11 +327,13 @@ class VectorStore:
         new_metadata = [self.metadata[i] for i in indices_to_keep]
         
         texts = [meta["text"] for meta in new_metadata]
-        embeddings = self.encoder.encode(texts, show_progress_bar=True)
-        embeddings = np.array(embeddings).astype('float32')
         
         self._create_new_index()
-        self.index.add(embeddings)
+        if self.encoder and self.index:
+            embeddings = self.encoder.encode(texts, show_progress_bar=True)
+            embeddings = np.array(embeddings).astype('float32')
+            self.index.add(embeddings)
+
         self.metadata = new_metadata
         self._build_file_index()
         

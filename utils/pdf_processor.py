@@ -1,7 +1,10 @@
 """
 Module xử lý PDF và chia nhỏ văn bản thành chunks
 """
-import fitz
+try:
+    import fitz
+except ImportError:
+    fitz = None
 import os
 from typing import List, Dict, Tuple
 import logging
@@ -38,6 +41,10 @@ class PDFProcessor:
         Returns:
             List các dict chứa {page_number, text}
         """
+        if fitz is None:
+            logger.error("PyMuPDF (fitz) is not installed. Cannot extract text.")
+            raise ImportError("PyMuPDF (fitz) missing")
+
         try:
             doc = fitz.open(pdf_path)
             pages_data = []
