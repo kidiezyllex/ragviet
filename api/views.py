@@ -1188,6 +1188,7 @@ class AdminUsersView(APIView):
         return Response(
             {
                 "success": True,
+                "message": "Đã tải danh sách người dùng thành công",
                 "users": users,
                 "total_users": len(users),
             },
@@ -1218,6 +1219,7 @@ class AdminFilesView(APIView):
         return Response(
             {
                 "success": True,
+                "message": "Đã tải danh sách tài liệu thành công",
                 "files": files,
                 "total_files": len(files),
             },
@@ -1255,7 +1257,15 @@ class AdminUserStatusView(APIView):
         is_active_bool = bool(is_active)
         ok = database.set_user_active(user_id, is_active_bool)
         if ok:
-            return Response({"success": True}, status=status.HTTP_200_OK)
+            msg = (
+                "Đã mở khóa user thành công"
+                if is_active_bool
+                else "Đã khóa user thành công"
+            )
+            return Response(
+                {"success": True, "message": msg},
+                status=status.HTTP_200_OK,
+            )
         return Response(
             {"success": False, "message": "Không thể cập nhật trạng thái user"},
             status=status.HTTP_400_BAD_REQUEST,
