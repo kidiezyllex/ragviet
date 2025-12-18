@@ -794,8 +794,8 @@ def render_shell(include_file_select: bool, content_builder):
     """Khung layout 1/4 sidebar - 3/4 main-content."""
     with ui.row().classes("w-full min-h-screen"):
         file_select = render_sidebar(include_file_select=include_file_select)
-        with ui.column().classes("min-h-screen p-6 gap-4 bg-white flex-1 overflow-y-hidden border rounded-lg").style(
-            "width:100%;max-width:100%;"
+        with ui.column().classes("min-h-screen p-6 gap-4 bg-white flex-1 border rounded-lg").style(
+            "width:100%;max-width:100%; overflow: hidden; display: flex; flex-direction: column;"
         ):
             content_builder(file_select)
 
@@ -1111,7 +1111,7 @@ def home_page():
                     send_btn.props(remove="loading")
 
         with ui.column().classes("w-full mx-auto gap-3 flex-1 items-stretch").style(
-            "height: 80vh; overflow-y: auto;"
+            "height: 80vh; max-height: 80vh; overflow-y: auto; overflow-x: hidden; flex-shrink: 1;"
         ):
             chat_messages_view()
         ui.timer(0.05, chat_messages_view.refresh, once=True)
