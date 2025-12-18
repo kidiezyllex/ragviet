@@ -201,11 +201,37 @@ async def async_api_request(
         }
 
 def notify_success(msg: str, notify_type: str = "positive"):
-    ui.notify(msg, type=notify_type)
+    """Hiển thị notification thành công"""
+    try:
+        ui.notify(msg, type=notify_type)
+    except RuntimeError:
+        # Nếu không có context (từ background task), dùng JavaScript
+        ui.run_javascript(f'''
+            if (window.$q) {{
+                window.$q.notify({{
+                    message: {json.dumps(msg)},
+                    type: {json.dumps(notify_type)},
+                    position: 'top'
+                }});
+            }}
+        ''')
 
 
 def notify_error(msg: str):
-    ui.notify(msg, type="negative")
+    """Hiển thị notification lỗi"""
+    try:
+        ui.notify(msg, type="negative")
+    except RuntimeError:
+        # Nếu không có context (từ background task), dùng JavaScript
+        ui.run_javascript(f'''
+            if (window.$q) {{
+                window.$q.notify({{
+                    message: {json.dumps(msg)},
+                    type: 'negative',
+                    position: 'top'
+                }});
+            }}
+        ''')
 
 
 def require_login() -> bool:
@@ -1329,6 +1355,31 @@ def admin_page():
 
     render_navbar()
     ui.markdown("## Trang quản trị").classes("px-6 pt-4")
+    
+    # Helper function để hiển thị notification từ async context
+    def admin_notify(msg: str, notify_type: str = "positive"):
+        """Hiển thị notification trong trang admin, hoạt động từ async context"""
+        try:
+            # Thử dùng ui.notify trực tiếp (nếu có context)
+            ui.notify(msg, type=notify_type)
+        except RuntimeError:
+            # Nếu không có context (từ background task), dùng client context đã lưu
+            try:
+                admin_client = context.client
+                with admin_client:
+                    ui.notify(msg, type=notify_type)
+            except:
+                # Fallback: dùng JavaScript với client đã lưu
+                admin_client = context.client
+                admin_client.run_javascript(f'''
+                    if (window.$q) {{
+                        window.$q.notify({{
+                            message: {json.dumps(msg)},
+                            type: {json.dumps(notify_type)},
+                            position: 'top'
+                        }});
+                    }}
+                ''')
 
     with ui.row().classes("w-full px-6 pb-6 gap-4"):
         # Quản lý người dùng
@@ -1357,16 +1408,16 @@ def admin_page():
                     users_grid.update()
                     if show_notification:
                         msg = resp.get("message") or "Đã làm mới danh sách người dùng"
-                        notify_success(msg)
+                        admin_notify(msg, "positive")
                 else:
                     logger.error(f"Không thể tải danh sách người dùng: {resp}")
                     if show_notification:
-                        notify_error("Không thể tải danh sách người dùng")
+                        admin_notify("Không thể tải danh sách người dùng", "negative")
 
             async def set_users_active(active: bool):
                 rows = await users_grid.get_selected_rows()
                 if not rows:
-                    notify_error("Vui lòng chọn ít nhất một user")
+                    admin_notify("Vui lòng chọn ít nhất một user", "negative")
                     return
                 
                 updated_count = 0
@@ -1393,17 +1444,17 @@ def admin_page():
                 
                 # Hiển thị notification
                 if errors:
-                    notify_error(f"Đã cập nhật {updated_count}/{len(rows)} user. Lỗi: {', '.join(errors)}")
+                    error_summary = ', '.join(errors[:2]) if len(errors) <= 2 else f"{len(errors)} lỗi"
+                    msg = f"Đã cập nhật {updated_count}/{len(rows)} user. Lỗi: {error_summary}"
+                    admin_notify(msg, "negative")
                 elif updated_count > 0:
                     if last_msg:
-                        notify_success(last_msg)
+                        admin_notify(last_msg, "positive")
                     else:
-                        if active:
-                            notify_success(f"Đã mở khóa {updated_count} user thành công")
-                        else:
-                            notify_success(f"Đã khóa {updated_count} user thành công")
+                        msg = f"Đã mở khóa {updated_count} user thành công" if active else f"Đã khóa {updated_count} user thành công"
+                        admin_notify(msg, "positive")
                 else:
-                    notify_error("Không thể cập nhật user nào")
+                    admin_notify("Không thể cập nhật user nào", "negative")
                     return
                 try:
                     await refresh_admin_data(show_notification=False)
@@ -1414,7 +1465,7 @@ def admin_page():
                 try:
                     rows = await users_grid.get_selected_rows()
                     if not rows:
-                        notify_error("Vui lòng chọn ít nhất một user để xóa")
+                        admin_notify("Vui lòng chọn ít nhất một user để xóa", "negative")
                         return
                     
                     logger.info(f"Starting to delete {len(rows)} user(s)")
@@ -1452,23 +1503,27 @@ def admin_page():
                     # Hiển thị notification - LUÔN LUÔN hiển thị
                     if errors and deleted_count == 0:
                         # Tất cả đều lỗi
-                        notify_error(f"Không thể xóa user nào. Lỗi: {', '.join(errors[:3])}")  # Chỉ hiển thị 3 lỗi đầu
+                        error_msg = ', '.join(errors[:3]) if len(errors) <= 3 else f"{len(errors)} lỗi"
+                        msg = f"Không thể xóa user nào. Lỗi: {error_msg}"
+                        admin_notify(msg, "negative")
                     elif errors:
                         # Một số thành công, một số lỗi
                         error_summary = ', '.join(errors[:2]) if len(errors) <= 2 else f"{len(errors)} lỗi"
-                        notify_error(f"Đã xóa {deleted_count}/{len(rows)} user. Lỗi: {error_summary}")
+                        msg = f"Đã xóa {deleted_count}/{len(rows)} user. Lỗi: {error_summary}"
+                        admin_notify(msg, "negative")
                     elif deleted_count > 0:
                         # Tất cả thành công
                         if last_msg:
                             logger.info(f"Showing success notification with backend message: {last_msg}")
-                            notify_success(last_msg)
+                            admin_notify(last_msg, "positive")
                         else:
                             logger.info(f"Showing success notification with default message")
-                            notify_success(f"Đã xóa {deleted_count} user thành công")
+                            msg = f"Đã xóa {deleted_count} user thành công"
+                            admin_notify(msg, "positive")
                     else:
                         # Không có user nào được xóa (không có lỗi nhưng cũng không thành công)
                         logger.warning("No users were deleted and no errors reported")
-                        notify_error("Không thể xóa user nào")
+                        admin_notify("Không thể xóa user nào", "negative")
                     
                     # Refresh danh sách sau khi xóa (dù thành công hay thất bại)
                     if deleted_count > 0:
@@ -1479,7 +1534,8 @@ def admin_page():
                             logger.error(f"Error refreshing admin data after delete: {e}", exc_info=True)
                 except Exception as e:
                     logger.error(f"Unexpected error in delete_selected_users: {e}", exc_info=True)
-                    notify_error(f"Lỗi không mong đợi khi xóa user: {str(e)}")
+                    msg = f"Lỗi không mong đợi khi xóa user: {str(e)}"
+                    admin_notify(msg, "negative")
 
             with ui.row().classes("gap-2 mt-2"):
                 ui.button("🔄 Làm mới người dùng", on_click=lambda: asyncio.create_task(load_users(show_notification=True))).props("type=button")
@@ -1518,16 +1574,33 @@ def admin_page():
                     # Chỉ hiển thị notification nếu được yêu cầu (không hiển thị khi load lần đầu)
                     if show_notification:
                         msg = resp.get("message") or "Đã làm mới danh sách tài liệu"
-                        notify_success(msg)
+                        # Dùng JavaScript để hiển thị notification từ async context
+                        admin_client.run_javascript(f'''
+                            if (window.$q) {{
+                                window.$q.notify({{
+                                    message: {json.dumps(msg)},
+                                    type: 'positive',
+                                    position: 'top'
+                                }});
+                            }}
+                        ''')
                 else:
                     logger.error(f"Không thể tải danh sách tài liệu: {resp}")
                     if show_notification:
-                        notify_error("Không thể tải danh sách tài liệu")
+                        admin_client.run_javascript('''
+                            if (window.$q) {
+                                window.$q.notify({
+                                    message: 'Không thể tải danh sách tài liệu',
+                                    type: 'negative',
+                                    position: 'top'
+                                });
+                            }
+                        ''')
 
             async def delete_selected_files():
                 rows = await files_grid.get_selected_rows()
                 if not rows:
-                    notify_error("Vui lòng chọn ít nhất một tài liệu để xóa")
+                    admin_notify("Vui lòng chọn ít nhất một tài liệu để xóa", "negative")
                     return
                 
                 deleted_count = 0
@@ -1557,14 +1630,17 @@ def admin_page():
                 
                 # Hiển thị notification
                 if errors:
-                    notify_error(f"Đã xóa {deleted_count}/{len(rows)} tài liệu. Lỗi: {', '.join(errors)}")
+                    error_summary = ', '.join(errors[:2]) if len(errors) <= 2 else f"{len(errors)} lỗi"
+                    msg = f"Đã xóa {deleted_count}/{len(rows)} tài liệu. Lỗi: {error_summary}"
+                    admin_notify(msg, "negative")
                 elif deleted_count > 0:
                     if last_msg:
-                        notify_success(last_msg)
+                        admin_notify(last_msg, "positive")
                     else:
-                        notify_success(f"Đã xóa {deleted_count} tài liệu thành công")
+                        msg = f"Đã xóa {deleted_count} tài liệu thành công"
+                        admin_notify(msg, "positive")
                 else:
-                    notify_error("Không thể xóa tài liệu nào")
+                    admin_notify("Không thể xóa tài liệu nào", "negative")
                     return
                 
                 # Refresh danh sách sau khi xóa thành công
@@ -1576,10 +1652,10 @@ def admin_page():
             async def download_selected_files():
                 rows = await files_grid.get_selected_rows()
                 if not rows:
-                    notify_error("Vui lòng chọn ít nhất một tài liệu để tải")
+                    admin_notify("Vui lòng chọn ít nhất một tài liệu để tải", "negative")
                     return
                 
-                notify_success("Đang xử lý tải tài liệu đã chọn...")
+                admin_notify("Đang xử lý tải tài liệu đã chọn...", "info")
                 opened = 0
                 errors = []
                 
@@ -1596,7 +1672,7 @@ def admin_page():
                         )
                         url = row.get("cloudinary_url")
                         if url:
-                            ui.run_javascript(f'window.open("{url}", "_blank")')
+                            admin_client.run_javascript(f'window.open("{url}", "_blank")')
                             opened += 1
                         else:
                             errors.append(f"{row.get('filename')}: Không có URL")
@@ -1607,13 +1683,18 @@ def admin_page():
                 # Hiển thị notification kết quả
                 if opened == 0:
                     if errors:
-                        notify_error(f"Không thể tải tài liệu nào. Lỗi: {', '.join(errors)}")
+                        error_summary = ', '.join(errors[:2]) if len(errors) <= 2 else f"{len(errors)} lỗi"
+                        msg = f"Không thể tải tài liệu nào. Lỗi: {error_summary}"
+                        admin_notify(msg, "negative")
                     else:
-                        notify_error("Không tìm thấy URL để tải cho tài liệu đã chọn")
+                        admin_notify("Không tìm thấy URL để tải cho tài liệu đã chọn", "negative")
                 elif errors:
-                    notify_success(f"Đã mở {opened}/{len(rows)} tài liệu. Một số lỗi: {', '.join(errors)}")
+                    error_summary = ', '.join(errors[:2]) if len(errors) <= 2 else f"{len(errors)} lỗi"
+                    msg = f"Đã mở {opened}/{len(rows)} tài liệu. Một số lỗi: {error_summary}"
+                    admin_notify(msg, "warning")
                 else:
-                    notify_success(f"Đã mở {opened} tài liệu trong tab mới")
+                    msg = f"Đã mở {opened} tài liệu trong tab mới"
+                    admin_notify(msg, "positive")
 
             with ui.row().classes("gap-2 mt-2"):
                 ui.button("🔄 Làm mới tài liệu", on_click=lambda: asyncio.create_task(load_files(show_notification=True))).props("type=button")
