@@ -611,12 +611,17 @@ class ChatSessionsView(APIView):
         
         result_sessions = []
         for session in sessions:
+            # Kiểm tra xem session có messages không
+            last_message = database.get_last_message_of_session(session["session_id"])
+            if not last_message:
+                # Bỏ qua session không có messages
+                continue
+            
             utc_time = datetime.fromisoformat(session["updated_at"].replace("Z", "+00:00"))
             vn_time = utc_time + timedelta(hours=7)
             updated_time = vn_time.strftime("%d/%m/%Y %H:%M")
             
-            last_message = database.get_last_message_of_session(session["session_id"])
-            last_question = last_message["message"] if last_message and last_message.get("message") else "Chưa có câu hỏi nào"
+            last_question = last_message["message"] if last_message.get("message") else "Chưa có câu hỏi nào"
             
             result_sessions.append({
                 "session_id": session["session_id"],
@@ -684,10 +689,24 @@ class ChatHistoryView(APIView):
         messages = database.get_session_messages(session_id)
         formatted_messages = []
         for msg in messages:
-            formatted_messages.append({
-                "role": "user" if msg.get("message") else "assistant",
-                "content": msg.get("message") or msg.get("response", "")
-            })
+            user_msg = msg.get("message")
+            assistant_msg = msg.get("response")
+            created_at = msg.get("created_at") or msg.get("timestamp")
+            
+            if user_msg:
+                formatted_messages.append({
+                    "role": "user",
+                    "content": user_msg,
+                    "created_at": created_at
+                })
+            
+            if assistant_msg:
+                formatted_messages.append({
+                    "role": "assistant",
+                    "content": assistant_msg,
+                    "created_at": created_at
+                })
+        
         return Response({
             "success": True,
             "messages": formatted_messages

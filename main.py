@@ -216,7 +216,9 @@ def require_login() -> bool:
 
 def require_auth():
     """Kiểm tra đăng nhập và redirect về /login nếu chưa đăng nhập."""
-    restore_session_from_storage()
+    # Chỉ restore session nếu chưa login để tránh gọi API không cần thiết
+    if not session_state.is_logged_in:
+        restore_session_from_storage()
     
     if not session_state.is_logged_in:
         ui.add_head_html(
@@ -233,6 +235,29 @@ def refresh_files_list() -> Tuple[str, List[str]]:
         return "Chưa có file nào được upload.", []
     files = result.get("files", [])
     # Cập nhật map filename -> chunks vào session_state để dùng cho cảnh báo
+    try:
+        session_state.file_chunks = {
+            file["filename"]: file.get("chunks", 0) for file in files
+        }
+    except Exception:
+        session_state.file_chunks = {}
+    files_list = "\n".join(
+        [f"📄 {file['filename']}: {file['chunks']} chunks" for file in files]
+    )
+    display_text = (
+        f"- Tổng số tài liệu: {result['total_files']}\n"
+        f"- Tổng số chunks: {result['total_chunks']}\n"
+        f"{files_list}"
+    )
+    file_names = [file["filename"] for file in files]
+    return display_text, file_names
+
+async def async_refresh_files_list() -> Tuple[str, List[str]]:
+    """Async version của refresh_files_list để không block UI"""
+    result = await asyncio.to_thread(api_get_files, session_state.session_id)
+    if not result.get("success") or result.get("total_files", 0) == 0:
+        return "Chưa có file nào được upload.", []
+    files = result.get("files", [])
     try:
         session_state.file_chunks = {
             file["filename"]: file.get("chunks", 0) for file in files
@@ -525,7 +550,9 @@ def handle_logout():
     ui.navigate.to("/login")
 
 def render_navbar():
-    restore_session_from_storage()
+    # Chỉ restore session nếu chưa login để tránh gọi API không cần thiết
+    if not session_state.is_logged_in:
+        restore_session_from_storage()
     with ui.header().classes("items-center justify-between px-4"):
         ui.label("Trang quản trị viên").classes("text-lg font-bold")
         with ui.row().classes("items-center gap-2"):
@@ -550,16 +577,17 @@ def render_files_summary(target_markdown):
 
 def render_sidebar(include_file_select: bool = True):
     """Sidebar (1/4 width) chứa upload, danh sách tài liệu, chọn file để chat."""
-    text, file_names = refresh_files_list()
+    # Khởi tạo với dữ liệu rỗng, load sau để không block UI
+    file_names = []
     file_select = None
 
     with ui.column().classes(
         "bg-gray-50 border-r h-screen p-4 gap-3 shrink-0 justify-between"
     ).style("width:25%;max-width:25%;min-width:260px; display: flex; flex-direction: column"):
-        def refresh_lists():
-            """Refresh danh sách files và cập nhật dropdown"""
+        async def refresh_lists():
+            """Refresh danh sách files và cập nhật dropdown (async)"""
             try:
-                new_text, new_files = refresh_files_list()
+                new_text, new_files = await async_refresh_files_list()
                 if include_file_select and file_select is not None:
                     new_options = ["Tất cả"] + new_files
                     file_select.options = new_options
@@ -572,25 +600,41 @@ def render_sidebar(include_file_select: bool = True):
             except Exception as e:
                 logger.error(f"Error refreshing lists: {e}", exc_info=True)
                 return []
+        
+        def refresh_lists_sync():
+            """Sync wrapper cho refresh_lists"""
+            try:
+                new_text, new_files = refresh_files_list()
+                if include_file_select and file_select is not None:
+                    new_options = ["Tất cả"] + new_files
+                    file_select.options = new_options
+                    current_value = file_select.value
+                    if current_value and current_value not in new_options:
+                        file_select.value = "Tất cả"
+                    logger.info(f"Updated file_select with {len(new_files)} files")
+                return new_files
+            except Exception as e:
+                logger.error(f"Error refreshing lists: {e}", exc_info=True)
+                return []
 
         async def handle_upload(e):
             """Xử lý upload và refresh sau khi thành công"""
             try:
-                result = await upload_temp_files(e)
-                if result:      # Upload thành công
-                    await asyncio.sleep(1.0)
-                    max_retries = 5
-                    for retry in range(max_retries):
-                        new_files = refresh_lists()
-                        if new_files:  # Có files rồi
-                            logger.info(f"Successfully refreshed file list after {retry + 1} attempts")
-                            # Force update UI
-                            if file_select is not None:
-                                file_select.update()
-                            break
-                        await asyncio.sleep(0.3)
-                    else:
-                        logger.warning("File list refresh completed but no files found")
+                    result = await upload_temp_files(e)
+                    if result:      # Upload thành công
+                        await asyncio.sleep(1.0)
+                        max_retries = 5
+                        for retry in range(max_retries):
+                            new_files = await refresh_lists()
+                            if new_files:  # Có files rồi
+                                logger.info(f"Successfully refreshed file list after {retry + 1} attempts")
+                                # Force update UI
+                                if file_select is not None:
+                                    file_select.update()
+                                break
+                            await asyncio.sleep(0.3)
+                        else:
+                            logger.warning("File list refresh completed but no files found")
             except Exception as ex:
                 logger.error(f"Error in handle_upload: {ex}", exc_info=True)
                 notify_error(f"Lỗi khi xử lý upload: {ex}")
@@ -611,6 +655,22 @@ def render_sidebar(include_file_select: bool = True):
                 multiple=True,
                 on_upload=handle_upload,
             ).props("color=primary flat no-thumbnails").classes("w-full").style("margin-top: 16px")
+            
+            # Load files list async ở background sau khi UI đã render
+            async def load_files_async():
+                """Load files list async và cập nhật dropdown"""
+                try:
+                    new_text, new_files = await async_refresh_files_list()
+                    if include_file_select and file_select is not None:
+                        new_options = ["Tất cả"] + new_files
+                        file_select.options = new_options
+                        file_select.update()
+                        logger.info(f"Loaded {len(new_files)} files async")
+                except Exception as e:
+                    logger.error(f"Error loading files async: {e}", exc_info=True)
+            
+            # Chạy async task để load files, không block UI
+            asyncio.create_task(load_files_async())
 
         ui.separator()
         
@@ -623,8 +683,39 @@ def render_sidebar(include_file_select: bool = True):
                 value=None
             ).props("clearable dense").classes("w-full").style("font-size: 0.85rem")
             
-            def refresh_sidebar_history():
-                """Refresh chat history trong sidebar"""
+            async def refresh_sidebar_history():
+                """Refresh chat history trong sidebar (async)"""
+                try:
+                    sessions_result = await asyncio.to_thread(api_get_chat_sessions, session_state.session_id)
+                    if sessions_result.get("success"):
+                        sessions = sessions_result.get("sessions", [])
+                        options = {}
+                        for session in sessions:
+                            s_id = session.get("session_id")
+                            if not s_id:
+                                continue
+                            title = session.get("title", "Chat không có tiêu đề")
+                            time_str = session.get("updated_at") or session.get("created_at", "")
+                            
+                            display_text = f"{title[:30]}..." if len(title) > 30 else title
+                            if time_str:
+                                display_text += f" ({time_str})"
+                            options[s_id] = display_text
+                        
+                        chat_history_sidebar.options = options
+                        
+                        target_id = session_state.pending_load_history or session_state.chat_session_id
+                        print(f"DEBUG: Refresh sidebar. pending={session_state.pending_load_history}, current={session_state.chat_session_id}, target={target_id}")
+                        if target_id and target_id in options:
+                            if chat_history_sidebar.value != target_id:
+                                chat_history_sidebar.value = target_id
+                        
+                        chat_history_sidebar.update()
+                except Exception as e:
+                    logger.error(f"Error refreshing sidebar history: {e}")
+            
+            def refresh_sidebar_history_sync():
+                """Sync wrapper cho refresh_sidebar_history"""
                 try:
                     sessions_result = api_get_chat_sessions(session_state.session_id)
                     if sessions_result.get("success"):
@@ -644,7 +735,6 @@ def render_sidebar(include_file_select: bool = True):
                         
                         chat_history_sidebar.options = options
                         
-                        # Priority: pending load history -> current chat session
                         target_id = session_state.pending_load_history or session_state.chat_session_id
                         print(f"DEBUG: Refresh sidebar. pending={session_state.pending_load_history}, current={session_state.chat_session_id}, target={target_id}")
                         if target_id and target_id in options:
@@ -655,7 +745,6 @@ def render_sidebar(include_file_select: bool = True):
                 except Exception as e:
                     logger.error(f"Error refreshing sidebar history: {e}")
             
-            # Expose refresh function so chat page can trigger update after new message
             session_state.refresh_sidebar_history = refresh_sidebar_history
             
             def on_sidebar_history_change(e):
@@ -663,13 +752,31 @@ def render_sidebar(include_file_select: bool = True):
                 current = session_state.pending_load_history or session_state.chat_session_id
                 print(f"DEBUG: Sidebar change event. Val={val}, Current={current}, Equal={val==current}")
                 if val and val != current:
-                    # Set flag để load history khi trang load
-                    session_state.pending_load_history = val
-                    # Navigate về trang chủ
-                    ui.navigate.to("/")
+                    # Hiển thị toast thông báo đang tải
+                    ui.notify("Đang tải lịch sử chat...", type="info")
+                    
+                    # Thử gọi load_chat_history trực tiếp, nếu chưa có thì đợi một chút
+                    def try_load():
+                        if hasattr(session_state, 'load_chat_history') and session_state.load_chat_history:
+                            # Gọi hàm load_chat_history trực tiếp để tránh reload trang
+                            session_state.load_chat_history(val)
+                            return True
+                        return False
+                    
+                    # Thử gọi ngay
+                    if not try_load():
+                        # Nếu chưa có, đợi một chút rồi thử lại (để đảm bảo build_content đã chạy xong)
+                        def retry_load():
+                            if try_load():
+                                return
+                            # Nếu vẫn chưa có sau 500ms, dùng fallback
+                            session_state.pending_load_history = val
+                            ui.navigate.to("/")
+                        ui.timer(0.5, retry_load, once=True)
             
             chat_history_sidebar.on_value_change(on_sidebar_history_change)
-            refresh_sidebar_history()
+            # Load dữ liệu async ở background, không block UI
+            asyncio.create_task(refresh_sidebar_history())
         
         ui.separator()
         with ui.card().classes("w-full shadow-none border p-3 gap-2"):
@@ -888,6 +995,26 @@ def home_page():
 
             if history_result.get("success"):
                 messages = history_result.get("messages", [])
+                
+                # Console.log toàn bộ data của chat-session để kiểm tra
+                print("=" * 80)
+                print(f"CHAT SESSION DATA - Session ID: {chat_session_id}")
+                print("=" * 80)
+                print(f"Total messages: {len(messages)}")
+                print(f"Full session data: {json.dumps(history_result, indent=2, ensure_ascii=False)}")
+                print("\nMessages breakdown:")
+                user_count = 0
+                agent_count = 0
+                for idx, msg in enumerate(messages):
+                    role = msg.get("role", "assistant")
+                    if role == "user":
+                        user_count += 1
+                    elif role == "assistant":
+                        agent_count += 1
+                    print(f"  [{idx+1}] Role: {role}, Content length: {len(msg.get('content', ''))}, Created: {msg.get('created_at')}")
+                print(f"\nSummary: {user_count} User messages, {agent_count} Agent messages")
+                print("=" * 80)
+                
                 if messages:
                     for msg in messages:
                         role = msg.get("role", "assistant")
@@ -895,11 +1022,14 @@ def home_page():
                         if content:
                             add_message(role, content, stamp=msg.get("created_at"))
                     session_state.chat_session_id = chat_session_id
-                    ui.notify(f"Đã tải {len(messages)} tin nhắn từ lịch sử", type="positive")
+                    ui.notify(f"Đã tải {len(messages)} tin nhắn từ lịch sử ({user_count} User, {agent_count} Agent)", type="positive")
                 else:
                     ui.notify("Không có tin nhắn trong session này", type="info")
             else:
                 notify_error(history_result.get("message", "Không thể tải lịch sử chat"))
+        
+        # Lưu reference của load_chat_history vào session_state để có thể gọi từ sidebar
+        session_state.load_chat_history = load_chat_history
 
         if session_state.pending_load_history:
             load_session_id = session_state.pending_load_history
@@ -944,6 +1074,28 @@ def home_page():
                     bot = resp.get("response", "Không có phản hồi")
                     session_state.chat_session_id = resp.get("chat_session_id", session_state.chat_session_id)
                     update_message(pending_id, bot, new_stamp=datetime.now().strftime("%H:%M"))
+                    
+                    # Log để kiểm tra xem backend có lưu cả User và Agent messages không
+                    print("=" * 80)
+                    print("AFTER SENDING MESSAGE - Checking if messages are saved:")
+                    print(f"User message: {message}")
+                    print(f"Agent response: {bot[:100]}..." if len(bot) > 100 else f"Agent response: {bot}")
+                    print(f"Chat session ID: {session_state.chat_session_id}")
+                    
+                    # Verify messages are saved by fetching history
+                    if session_state.chat_session_id:
+                        verify_history = api_get_chat_history(session_state.chat_session_id, session_state.session_id)
+                        if verify_history.get("success"):
+                            verify_messages = verify_history.get("messages", [])
+                            user_msgs = [m for m in verify_messages if m.get("role") == "user"]
+                            agent_msgs = [m for m in verify_messages if m.get("role") == "assistant"]
+                            print(f"Verification: {len(user_msgs)} User messages, {len(agent_msgs)} Agent messages in DB")
+                            print(f"Latest User message: {user_msgs[-1].get('content', '')[:50] if user_msgs else 'None'}...")
+                            print(f"Latest Agent message: {agent_msgs[-1].get('content', '')[:50] if agent_msgs else 'None'}...")
+                        else:
+                            print(f"Warning: Could not verify messages - {verify_history.get('message', 'Unknown error')}")
+                    print("=" * 80)
+                    
                     if hasattr(session_state, 'refresh_sidebar_history'):
                         session_state.refresh_sidebar_history()
                     ui.notify("Đã nhận câu trả lời", type="positive")
@@ -969,7 +1121,12 @@ def home_page():
                 with ui.row().classes("w-full no-wrap items-center"):
                     with ui.avatar().on('click', lambda: ui.navigate.to("/")):
                         ui.image(user_avatar)
-                    msg_input = ui.input(placeholder="Nhập tin nhắn...").on("keydown.enter", lambda _: asyncio.create_task(send())) \
+                    async def handle_enter(e):
+                        """Xử lý Enter key và prevent default để tránh reload trang"""
+                        # NiceGUI sẽ tự động prevent default cho async handlers
+                        await send()
+                    
+                    msg_input = ui.input(placeholder="Nhập tin nhắn...").on("keydown.enter", handle_enter) \
                         .props("rounded outlined input-class=mx-3 clearable").classes("flex-grow")
 
     render_shell(include_file_select=True, content_builder=build_content)
@@ -990,7 +1147,7 @@ def login_page():
                     "Đăng nhập",
                     color="primary",
                     on_click=lambda: handle_login(email.value, password.value),
-                ).classes("w-full")
+                ).props("type=button").classes("w-full")
 
 
 @ui.page("/register")
@@ -1007,7 +1164,7 @@ def register_page():
                     "Đăng ký",
                     color="primary",
                     on_click=lambda: handle_register(username.value, email.value, password.value, confirm.value),
-                ).classes("w-full")
+                ).props("type=button").classes("w-full")
                 with ui.column().classes("w-full items-center"):
                     ui.link("Đã có tài khoản? Đăng nhập", "/login")
 
@@ -1028,7 +1185,7 @@ def forgot_page():
                     else:
                         notify_error(msg)
 
-                ui.button("Gửi mã OTP", color="primary", on_click=submit).classes("w-full")
+                ui.button("Gửi mã OTP", color="primary", on_click=submit).props("type=button").classes("w-full")
                 ui.link("Quay lại đăng nhập", "/login")
 
 
@@ -1050,7 +1207,7 @@ def reset_page():
         else:
             notify_error(res.get("message", "Đặt lại mật khẩu thất bại"))
 
-    ui.button("Đặt lại mật khẩu", color="primary", on_click=submit)
+    ui.button("Đặt lại mật khẩu", color="primary", on_click=submit).props("type=button")
     ui.link("Quay lại đăng nhập", "/login")
 
 
@@ -1098,7 +1255,7 @@ def documents_page():
                                 else:
                                     notify_error(view_result.get("message", "Không thể xem file"))
                             
-                            ui.button("👁️ Xem PDF", on_click=lambda f=file['filename']: view_pdf(f)).props("outline")
+                            ui.button("👁️ Xem PDF", on_click=lambda f=file['filename']: view_pdf(f)).props("outline type=button")
                             
                             # Nút xóa
                             def delete_file(fname=file['filename']):
@@ -1109,9 +1266,9 @@ def documents_page():
                                 else:
                                     notify_error(res.get("message", "Không thể xóa file"))
                             
-                            ui.button("🗑️ Xóa", color="negative", on_click=lambda f=file['filename']: delete_file(f)).props("outline")
+                            ui.button("🗑️ Xóa", color="negative", on_click=lambda f=file['filename']: delete_file(f)).props("outline type=button")
 
-    ui.button("🔄 Làm mới danh sách", on_click=refresh).classes("mb-4")
+    ui.button("🔄 Làm mới danh sách", on_click=refresh).props("type=button").classes("mb-4")
 
     ui.markdown("### Upload mới")
     
@@ -1157,8 +1314,8 @@ def documents_page():
             notify_error(res.get("message", "Không thể xóa tài liệu"))
 
     with ui.row().classes("gap-2 mt-4"):
-        ui.button("🗑️ Xóa file đã chọn", color="negative", on_click=delete_selected)
-        ui.button("🗑️ Xóa toàn bộ", color="negative", on_click=clear_all)
+        ui.button("🗑️ Xóa file đã chọn", color="negative", on_click=delete_selected).props("type=button")
+        ui.button("🗑️ Xóa toàn bộ", color="negative", on_click=clear_all).props("type=button")
 
     refresh()
 
@@ -1259,13 +1416,13 @@ def admin_page():
                 await refresh_admin_data()
 
             with ui.row().classes("gap-2 mt-2"):
-                ui.button("🔄 Làm mới người dùng", on_click=lambda: asyncio.create_task(load_users()))
+                ui.button("🔄 Làm mới người dùng", on_click=lambda: asyncio.create_task(load_users())).props("type=button")
                 ui.button("🔒 Khoá user", color="warning",
-                          on_click=lambda: asyncio.create_task(set_users_active(False)))
+                          on_click=lambda: asyncio.create_task(set_users_active(False))).props("type=button")
                 ui.button("🔓 Mở khoá user", color="positive",
-                          on_click=lambda: asyncio.create_task(set_users_active(True)))
+                          on_click=lambda: asyncio.create_task(set_users_active(True))).props("type=button")
                 ui.button("🗑️ Xóa user đã chọn", color="negative",
-                          on_click=lambda: asyncio.create_task(delete_selected_users()))
+                          on_click=lambda: asyncio.create_task(delete_selected_users())).props("type=button")
 
         # Quản lý tài liệu
         with ui.card().classes("flex-1 p-4 gap-3"):
@@ -1351,11 +1508,11 @@ def admin_page():
                     notify_success(f"Đã mở {opened} tài liệu trong tab mới")
 
             with ui.row().classes("gap-2 mt-2"):
-                ui.button("🔄 Làm mới tài liệu", on_click=lambda: asyncio.create_task(load_files()))
+                ui.button("🔄 Làm mới tài liệu", on_click=lambda: asyncio.create_task(load_files())).props("type=button")
                 ui.button("⬇️ Tải tài liệu đã chọn", color="primary",
-                          on_click=lambda: asyncio.create_task(download_selected_files()))
+                          on_click=lambda: asyncio.create_task(download_selected_files())).props("type=button")
                 ui.button("🗑️ Xóa tài liệu đã chọn", color="negative",
-                          on_click=lambda: asyncio.create_task(delete_selected_files()))
+                          on_click=lambda: asyncio.create_task(delete_selected_files())).props("type=button")
 
     async def refresh_admin_data():
         """Tải lại đồng thời danh sách users và files cho trang admin."""
