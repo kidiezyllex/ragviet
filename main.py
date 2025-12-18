@@ -1250,7 +1250,6 @@ def documents_page():
                                 view_result = api_view_file(fname, session_state.session_id)
                                 if view_result.get("success"):
                                     url = view_result.get("url")
-                                    # Mở PDF trong tab mới
                                     ui.run_javascript(f'window.open("{url}", "_blank")')
                                 else:
                                     notify_error(view_result.get("message", "Không thể xem file"))
@@ -1277,9 +1276,7 @@ def documents_page():
         try:
             result = await upload_temp_files(e)
             if result:  # Upload thành công
-                # Đợi một chút để đảm bảo server đã xử lý xong và lưu vào DB
                 await asyncio.sleep(1.5)
-                # Retry refresh nếu cần
                 for retry in range(3):
                     refresh()
                     await asyncio.sleep(0.5)
@@ -1352,17 +1349,19 @@ def admin_page():
                 }
             ).classes("w-full h-80")
 
-            async def load_users():
+            async def load_users(show_notification: bool = True):
                 """Tải danh sách users (gọi API bằng httpx.AsyncClient)."""
                 resp = await async_api_request("GET", "/admin/users/")
                 if resp.get("success"):
                     users_grid.options["rowData"] = resp.get("users", [])
                     users_grid.update()
-                    # Ưu tiên dùng message trả về từ API nếu có
-                    msg = resp.get("message") or "Đã làm mới danh sách người dùng"
-                    notify_success(msg)
+                    if show_notification:
+                        msg = resp.get("message") or "Đã làm mới danh sách người dùng"
+                        notify_success(msg)
                 else:
                     logger.error(f"Không thể tải danh sách người dùng: {resp}")
+                    if show_notification:
+                        notify_error("Không thể tải danh sách người dùng")
 
             async def set_users_active(active: bool):
                 rows = await users_grid.get_selected_rows()
@@ -1380,7 +1379,6 @@ def admin_page():
                         notify_error(resp.get("message", "Không thể cập nhật trạng thái user"))
                         return
                     last_msg = resp.get("message") or last_msg
-                # Ưu tiên message chi tiết từ backend nếu có
                 if last_msg:
                     notify_success(last_msg)
                 else:
@@ -1388,8 +1386,7 @@ def admin_page():
                         notify_success("Đã mở khóa user đã chọn")
                     else:
                         notify_success("Đã khóa user đã chọn")
-                # Sau khi cập nhật trạng thái, tải lại dữ liệu admin
-                await refresh_admin_data()
+                await refresh_admin_data(show_notification=False)
 
             async def delete_selected_users():
                 rows = await users_grid.get_selected_rows()
@@ -1407,16 +1404,14 @@ def admin_page():
                         notify_error(resp.get("message", "Không thể xóa user"))
                         return
                     last_msg = resp.get("message") or last_msg
-                # Ưu tiên hiển thị message chi tiết từ API (vd: "Đã xóa toàn bộ dữ liệu DB cho user ...")
                 if last_msg:
                     notify_success(last_msg)
                 else:
                     notify_success(f"Đã xóa {len(rows)} user")
-                # Sau khi xóa user, tải lại toàn bộ dữ liệu admin (users + files)
-                await refresh_admin_data()
+                await refresh_admin_data(show_notification=False)
 
             with ui.row().classes("gap-2 mt-2"):
-                ui.button("🔄 Làm mới người dùng", on_click=lambda: asyncio.create_task(load_users())).props("type=button")
+                ui.button("🔄 Làm mới người dùng", on_click=lambda: asyncio.create_task(load_users(show_notification=True))).props("type=button")
                 ui.button("🔒 Khoá user", color="warning",
                           on_click=lambda: asyncio.create_task(set_users_active(False))).props("type=button")
                 ui.button("🔓 Mở khoá user", color="positive",
@@ -1443,17 +1438,20 @@ def admin_page():
                 }
             ).classes("w-full h-80")
 
-            async def load_files():
+            async def load_files(show_notification: bool = True):
                 """Tải danh sách tài liệu (gọi API bằng httpx.AsyncClient)."""
                 resp = await async_api_request("GET", "/admin/files/")
                 if resp.get("success"):
                     files_grid.options["rowData"] = resp.get("files", [])
                     files_grid.update()
-                    # Ưu tiên dùng message trả về từ API nếu có
-                    msg = resp.get("message") or "Đã làm mới danh sách tài liệu"
-                    notify_success(msg)
+                    # Chỉ hiển thị notification nếu được yêu cầu (không hiển thị khi load lần đầu)
+                    if show_notification:
+                        msg = resp.get("message") or "Đã làm mới danh sách tài liệu"
+                        notify_success(msg)
                 else:
                     logger.error(f"Không thể tải danh sách tài liệu: {resp}")
+                    if show_notification:
+                        notify_error("Không thể tải danh sách tài liệu")
 
             async def delete_selected_files():
                 rows = await files_grid.get_selected_rows()
@@ -1480,7 +1478,7 @@ def admin_page():
                 else:
                     notify_success(f"Đã xóa {len(rows)} tài liệu")
                 # Sau khi xóa tài liệu, tải lại toàn bộ dữ liệu admin (users + files)
-                await refresh_admin_data()
+                await refresh_admin_data(show_notification=False)
 
             async def download_selected_files():
                 rows = await files_grid.get_selected_rows()
@@ -1508,22 +1506,26 @@ def admin_page():
                     notify_success(f"Đã mở {opened} tài liệu trong tab mới")
 
             with ui.row().classes("gap-2 mt-2"):
-                ui.button("🔄 Làm mới tài liệu", on_click=lambda: asyncio.create_task(load_files())).props("type=button")
+                ui.button("🔄 Làm mới tài liệu", on_click=lambda: asyncio.create_task(load_files(show_notification=True))).props("type=button")
                 ui.button("⬇️ Tải tài liệu đã chọn", color="primary",
                           on_click=lambda: asyncio.create_task(download_selected_files())).props("type=button")
                 ui.button("🗑️ Xóa tài liệu đã chọn", color="negative",
                           on_click=lambda: asyncio.create_task(delete_selected_files())).props("type=button")
 
-    async def refresh_admin_data():
-        """Tải lại đồng thời danh sách users và files cho trang admin."""
-        await load_users()
-        await load_files()
+    async def refresh_admin_data(show_notification: bool = True):
+        """Tải lại đồng thời danh sách users và files cho trang admin (chạy song song)."""
+        await asyncio.gather(
+            load_users(show_notification=show_notification),
+            load_files(show_notification=show_notification)
+        )
 
     async def _initial_admin_load():
-        # Khi vừa vào /admin, tự động gọi /api/admin/users/ và /api/admin/files/
-        await refresh_admin_data()
+        try:
+            await refresh_admin_data(show_notification=False)
+        except Exception as e:
+            logger.error(f"Error loading admin data: {e}", exc_info=True)
 
-    ui.timer(0.1, lambda: asyncio.create_task(_initial_admin_load()), once=True)
+    asyncio.create_task(_initial_admin_load())
 
 
 @ui.page("/chat")
