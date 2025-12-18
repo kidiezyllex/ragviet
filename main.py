@@ -1368,47 +1368,118 @@ def admin_page():
                 if not rows:
                     notify_error("Vui lòng chọn ít nhất một user")
                     return
+                
+                updated_count = 0
                 last_msg = None
+                errors = []
+                
                 for row in rows:
-                    resp = await async_api_request(
-                        "POST",
-                        "/admin/users/status/",
-                        {"user_id": row.get("id"), "is_active": active},
-                    )
-                    if not resp.get("success"):
-                        notify_error(resp.get("message", "Không thể cập nhật trạng thái user"))
-                        return
-                    last_msg = resp.get("message") or last_msg
-                if last_msg:
-                    notify_success(last_msg)
-                else:
-                    if active:
-                        notify_success("Đã mở khóa user đã chọn")
+                    try:
+                        resp = await async_api_request(
+                            "POST",
+                            "/admin/users/status/",
+                            {"user_id": row.get("id"), "is_active": active},
+                        )
+                        if resp.get("success"):
+                            updated_count += 1
+                            if resp.get("message"):
+                                last_msg = resp.get("message")
+                        else:
+                            error_msg = resp.get("message", "Không thể cập nhật trạng thái user")
+                            errors.append(f"User {row.get('id')}: {error_msg}")
+                    except Exception as e:
+                        logger.error(f"Error updating user {row.get('id')}: {e}", exc_info=True)
+                        errors.append(f"User {row.get('id')}: Lỗi khi cập nhật")
+                
+                # Hiển thị notification
+                if errors:
+                    notify_error(f"Đã cập nhật {updated_count}/{len(rows)} user. Lỗi: {', '.join(errors)}")
+                elif updated_count > 0:
+                    if last_msg:
+                        notify_success(last_msg)
                     else:
-                        notify_success("Đã khóa user đã chọn")
-                await refresh_admin_data(show_notification=False)
+                        if active:
+                            notify_success(f"Đã mở khóa {updated_count} user thành công")
+                        else:
+                            notify_success(f"Đã khóa {updated_count} user thành công")
+                else:
+                    notify_error("Không thể cập nhật user nào")
+                    return
+                try:
+                    await refresh_admin_data(show_notification=False)
+                except Exception as e:
+                    logger.error(f"Error refreshing admin data after update: {e}", exc_info=True)
 
             async def delete_selected_users():
-                rows = await users_grid.get_selected_rows()
-                if not rows:
-                    notify_error("Vui lòng chọn ít nhất một user để xóa")
-                    return
-                last_msg = None
-                for row in rows:
-                    resp = await async_api_request(
-                        "POST",
-                        "/admin/users/delete/",
-                        {"user_id": row.get("id")},
-                    )
-                    if not resp.get("success"):
-                        notify_error(resp.get("message", "Không thể xóa user"))
+                try:
+                    rows = await users_grid.get_selected_rows()
+                    if not rows:
+                        notify_error("Vui lòng chọn ít nhất một user để xóa")
                         return
-                    last_msg = resp.get("message") or last_msg
-                if last_msg:
-                    notify_success(last_msg)
-                else:
-                    notify_success(f"Đã xóa {len(rows)} user")
-                await refresh_admin_data(show_notification=False)
+                    
+                    logger.info(f"Starting to delete {len(rows)} user(s)")
+                    deleted_count = 0
+                    last_msg = None
+                    errors = []
+                    
+                    for row in rows:
+                        user_id = row.get("id")
+                        try:
+                            logger.info(f"Deleting user: {user_id}")
+                            resp = await async_api_request(
+                                "POST",
+                                "/admin/users/delete/",
+                                {"user_id": user_id},
+                            )
+                            logger.info(f"Delete response for user {user_id}: {resp}")
+                            
+                            if resp.get("success"):
+                                deleted_count += 1
+                                # Lưu message từ response (nếu có)
+                                if resp.get("message"):
+                                    last_msg = resp.get("message")
+                                    logger.info(f"Got message from backend: {last_msg}")
+                            else:
+                                error_msg = resp.get("message", "Không thể xóa user")
+                                errors.append(f"User {user_id}: {error_msg}")
+                                logger.warning(f"Failed to delete user {user_id}: {error_msg}")
+                        except Exception as e:
+                            logger.error(f"Error deleting user {user_id}: {e}", exc_info=True)
+                            errors.append(f"User {user_id}: Lỗi khi xóa")
+                    
+                    logger.info(f"Delete completed. deleted_count={deleted_count}, errors={len(errors)}, last_msg={last_msg}")
+                    
+                    # Hiển thị notification - LUÔN LUÔN hiển thị
+                    if errors and deleted_count == 0:
+                        # Tất cả đều lỗi
+                        notify_error(f"Không thể xóa user nào. Lỗi: {', '.join(errors[:3])}")  # Chỉ hiển thị 3 lỗi đầu
+                    elif errors:
+                        # Một số thành công, một số lỗi
+                        error_summary = ', '.join(errors[:2]) if len(errors) <= 2 else f"{len(errors)} lỗi"
+                        notify_error(f"Đã xóa {deleted_count}/{len(rows)} user. Lỗi: {error_summary}")
+                    elif deleted_count > 0:
+                        # Tất cả thành công
+                        if last_msg:
+                            logger.info(f"Showing success notification with backend message: {last_msg}")
+                            notify_success(last_msg)
+                        else:
+                            logger.info(f"Showing success notification with default message")
+                            notify_success(f"Đã xóa {deleted_count} user thành công")
+                    else:
+                        # Không có user nào được xóa (không có lỗi nhưng cũng không thành công)
+                        logger.warning("No users were deleted and no errors reported")
+                        notify_error("Không thể xóa user nào")
+                    
+                    # Refresh danh sách sau khi xóa (dù thành công hay thất bại)
+                    if deleted_count > 0:
+                        try:
+                            logger.info("Refreshing admin data after successful delete")
+                            await refresh_admin_data(show_notification=False)
+                        except Exception as e:
+                            logger.error(f"Error refreshing admin data after delete: {e}", exc_info=True)
+                except Exception as e:
+                    logger.error(f"Unexpected error in delete_selected_users: {e}", exc_info=True)
+                    notify_error(f"Lỗi không mong đợi khi xóa user: {str(e)}")
 
             with ui.row().classes("gap-2 mt-2"):
                 ui.button("🔄 Làm mới người dùng", on_click=lambda: asyncio.create_task(load_users(show_notification=True))).props("type=button")
@@ -1458,50 +1529,89 @@ def admin_page():
                 if not rows:
                     notify_error("Vui lòng chọn ít nhất một tài liệu để xóa")
                     return
+                
+                deleted_count = 0
                 last_msg = None
+                errors = []
+                
                 for row in rows:
-                    resp = await async_api_request(
-                        "POST",
-                        "/admin/files/delete/",
-                        {
-                            "user_id": row.get("user_id"),
-                            "filename": row.get("filename"),
-                        },
-                    )
-                    if not resp.get("success"):
-                        notify_error(resp.get("message", "Không thể xóa tài liệu"))
-                        return
-                    last_msg = resp.get("message") or last_msg
-                # Ưu tiên thông báo chi tiết từ backend nếu có
-                if last_msg:
-                    notify_success(last_msg)
+                    try:
+                        resp = await async_api_request(
+                            "POST",
+                            "/admin/files/delete/",
+                            {
+                                "user_id": row.get("user_id"),
+                                "filename": row.get("filename"),
+                            },
+                        )
+                        if resp.get("success"):
+                            deleted_count += 1
+                            if resp.get("message"):
+                                last_msg = resp.get("message")
+                        else:
+                            error_msg = resp.get("message", "Không thể xóa tài liệu")
+                            errors.append(f"{row.get('filename')}: {error_msg}")
+                    except Exception as e:
+                        logger.error(f"Error deleting file {row.get('filename')}: {e}", exc_info=True)
+                        errors.append(f"{row.get('filename')}: Lỗi khi xóa")
+                
+                # Hiển thị notification
+                if errors:
+                    notify_error(f"Đã xóa {deleted_count}/{len(rows)} tài liệu. Lỗi: {', '.join(errors)}")
+                elif deleted_count > 0:
+                    if last_msg:
+                        notify_success(last_msg)
+                    else:
+                        notify_success(f"Đã xóa {deleted_count} tài liệu thành công")
                 else:
-                    notify_success(f"Đã xóa {len(rows)} tài liệu")
-                # Sau khi xóa tài liệu, tải lại toàn bộ dữ liệu admin (users + files)
-                await refresh_admin_data(show_notification=False)
+                    notify_error("Không thể xóa tài liệu nào")
+                    return
+                
+                # Refresh danh sách sau khi xóa thành công
+                try:
+                    await refresh_admin_data(show_notification=False)
+                except Exception as e:
+                    logger.error(f"Error refreshing admin data after delete: {e}", exc_info=True)
 
             async def download_selected_files():
                 rows = await files_grid.get_selected_rows()
                 if not rows:
                     notify_error("Vui lòng chọn ít nhất một tài liệu để tải")
                     return
+                
                 notify_success("Đang xử lý tải tài liệu đã chọn...")
                 opened = 0
+                errors = []
+                
                 for row in rows:
-                    await async_api_request(
-                        "POST",
-                        "/admin/files/download-log/",
-                        {
-                            "user_id": row.get("user_id"),
-                            "filename": row.get("filename"),
-                        },
-                    )
-                    url = row.get("cloudinary_url")
-                    if url:
-                        ui.run_javascript(f'window.open("{url}", "_blank")')
-                        opened += 1
+                    try:
+                        # Log download action
+                        await async_api_request(
+                            "POST",
+                            "/admin/files/download-log/",
+                            {
+                                "user_id": row.get("user_id"),
+                                "filename": row.get("filename"),
+                            },
+                        )
+                        url = row.get("cloudinary_url")
+                        if url:
+                            ui.run_javascript(f'window.open("{url}", "_blank")')
+                            opened += 1
+                        else:
+                            errors.append(f"{row.get('filename')}: Không có URL")
+                    except Exception as e:
+                        logger.error(f"Error downloading file {row.get('filename')}: {e}", exc_info=True)
+                        errors.append(f"{row.get('filename')}: Lỗi khi tải")
+                
+                # Hiển thị notification kết quả
                 if opened == 0:
-                    notify_error("Không tìm thấy URL để tải cho tài liệu đã chọn")
+                    if errors:
+                        notify_error(f"Không thể tải tài liệu nào. Lỗi: {', '.join(errors)}")
+                    else:
+                        notify_error("Không tìm thấy URL để tải cho tài liệu đã chọn")
+                elif errors:
+                    notify_success(f"Đã mở {opened}/{len(rows)} tài liệu. Một số lỗi: {', '.join(errors)}")
                 else:
                     notify_success(f"Đã mở {opened} tài liệu trong tab mới")
 
