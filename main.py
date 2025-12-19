@@ -63,6 +63,58 @@ blockquote {
     margin: 0.5em 0;
     color: #666;
 }
+/* Custom Scrollbar */
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+*::-webkit-scrollbar-track {
+  background: white;
+  -webkit-border-radius: 0;
+  border-radius: 0;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: #ACACAC;
+  -webkit-border-radius: 10px;
+  border-radius: 10px;
+  border: none;
+  box-shadow: none;
+  background-clip: content-box;
+  background-image: linear-gradient(#ACACAC, #ACACAC);
+  background-size: 8px 30px;
+  background-repeat: no-repeat;
+  background-position: center;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: #999999;
+}
+
+/* Force remove all arrow buttons */
+*::-webkit-scrollbar-button {
+  width: 0;
+  height: 0;
+  display: none;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+*::-webkit-scrollbar-button:start:decrement,
+*::-webkit-scrollbar-button:end:increment {
+  width: 0;
+  height: 0;
+  display: none;
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
+  width: 0;
+  height: 0;
+}
 </style>
 <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
 <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
