@@ -609,7 +609,7 @@ def render_sidebar(include_file_select: bool = True):
 
     with ui.column().classes(
         "bg-gray-50 border-r h-screen p-4 gap-3 shrink-0 justify-between"
-    ).style("width:25%;max-width:25%;min-width:260px; display: flex; flex-direction: column"):
+    ).style("width:25%;max-width:25%;min-width:260px; max-height:100vh; overflow-y:auto; display: flex; flex-direction: column"):
         async def refresh_lists():
             """Refresh danh sách files và cập nhật dropdown (async)"""
             try:
@@ -644,23 +644,26 @@ def render_sidebar(include_file_select: bool = True):
                 return []
 
         async def handle_upload(e):
-            """Xử lý upload và refresh sau khi thành công"""
+            """Xử lý upload và refresh sau khi thành công - ngăn chặn reload trang"""
             try:
-                    result = await upload_temp_files(e)
-                    if result:      # Upload thành công
-                        await asyncio.sleep(1.0)
-                        max_retries = 5
-                        for retry in range(max_retries):
-                            new_files = await refresh_lists()
-                            if new_files:  # Có files rồi
-                                logger.info(f"Successfully refreshed file list after {retry + 1} attempts")
-                                # Force update UI
-                                if file_select is not None:
-                                    file_select.update()
-                                break
-                            await asyncio.sleep(0.3)
-                        else:
-                            logger.warning("File list refresh completed but no files found")
+                result = await upload_temp_files(e)
+                if result:      # Upload thành công
+                    await asyncio.sleep(1.0)
+                    max_retries = 5
+                    for retry in range(max_retries):
+                        new_files = await refresh_lists()
+                        if new_files:  # Có files rồi
+                            logger.info(f"Successfully refreshed file list after {retry + 1} attempts")
+                            # Force update UI
+                            if file_select is not None:
+                                file_select.update()
+                            # Refresh danh sách file xóa nếu đã được định nghĩa
+                            if hasattr(session_state, 'refresh_delete_file_list') and session_state.refresh_delete_file_list:
+                                await session_state.refresh_delete_file_list()
+                            break
+                        await asyncio.sleep(0.3)
+                    else:
+                        logger.warning("File list refresh completed but no files found")
             except Exception as ex:
                 logger.error(f"Error in handle_upload: {ex}", exc_info=True)
                 notify_error(f"Lỗi khi xử lý upload: {ex}")
@@ -676,13 +679,31 @@ def render_sidebar(include_file_select: bool = True):
             else:
                 file_select = None
             
-            ui.upload(
+            upload_component = ui.upload(
                 label="Upload tài liệu PDF",
                 multiple=True,
                 on_upload=handle_upload,
             ).props("color=primary flat no-thumbnails").classes("w-full").style("margin-top: 16px")
             
-            # Load files list async ở background sau khi UI đã render
+            def prevent_form_submit():
+                ui.run_javascript('''
+                    (function() {
+                        // Tìm tất cả các form và ngăn chặn submission
+                        document.querySelectorAll('form').forEach(function(form) {
+                            form.addEventListener('submit', function(e) {
+                                // Chỉ prevent nếu form chứa file input
+                                if (form.querySelector('input[type="file"]')) {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    return false;
+                                }
+                            }, true);
+                        });
+                    })();
+                ''')
+            
+            ui.timer(0.1, prevent_form_submit, once=True)
+            
             async def load_files_async():
                 """Load files list async và cập nhật dropdown"""
                 try:
@@ -695,12 +716,10 @@ def render_sidebar(include_file_select: bool = True):
                 except Exception as e:
                     logger.error(f"Error loading files async: {e}", exc_info=True)
             
-            # Chạy async task để load files, không block UI
             asyncio.create_task(load_files_async())
 
         ui.separator()
         
-        # Section lịch sử chat trong sidebar
         with ui.card().classes("w-full shadow-none border p-3 gap-2"):
             ui.label("📜 Lịch sử chat").classes("text-sm font-semibold mb-2")
             chat_history_sidebar = ui.select(
@@ -803,6 +822,113 @@ def render_sidebar(include_file_select: bool = True):
             chat_history_sidebar.on_value_change(on_sidebar_history_change)
             # Load dữ liệu async ở background, không block UI
             asyncio.create_task(refresh_sidebar_history())
+        
+        ui.separator()
+        
+        # Section quản lý tài liệu - xóa file
+        with ui.card().classes("w-full shadow-none border p-3 gap-2"):
+            ui.label("🗑️ Quản lý tài liệu").classes("text-sm font-semibold mb-2")
+            delete_file_select = ui.select(
+                options=[], 
+                label="Chọn file để xóa", 
+                value=None
+            ).props("clearable dense").classes("w-full").style("font-size: 0.85rem")
+            
+            async def refresh_delete_file_list():
+                """Refresh danh sách file cho dropdown xóa"""
+                try:
+                    new_text, new_files = await async_refresh_files_list()
+                    delete_file_select.options = new_files
+                    delete_file_select.update()
+                except Exception as e:
+                    logger.error(f"Error refreshing delete file list: {e}", exc_info=True)
+            
+            # Lưu reference vào session_state để có thể gọi từ handle_upload
+            session_state.refresh_delete_file_list = refresh_delete_file_list
+            
+            def show_delete_selected_confirm():
+                if not delete_file_select.value:
+                    notify_error("Vui lòng chọn file cần xóa")
+                    return
+                
+                filename = delete_file_select.value
+                with ui.dialog() as dialog, ui.card().classes("p-6 gap-4"):
+                    ui.label(f"Xác nhận xóa file").classes("text-lg font-semibold")
+                    ui.label(f"Bạn có chắc chắn muốn xóa file '{filename}' không?").classes("text-gray-700")
+                    ui.label("Hành động này không thể hoàn tác!").classes("text-red-600 font-medium")
+                    
+                    with ui.row().classes("gap-2 justify-end w-full"):
+                        ui.button("Hủy", on_click=dialog.close).props("outline")
+                        async def confirm_delete():
+                            dialog.close()
+                            notify_success("Đang xóa file và remove chunks khỏi vector store...", notify_type="info")
+                            try:
+                                res = await asyncio.to_thread(api_delete_file, filename, session_state.session_id)
+                                if res.get("success"):
+                                    notify_success(res.get("message", "Đã xóa file thành công"))
+                                    # Refresh danh sách file sau khi xóa
+                                    await refresh_delete_file_list()
+                                    await refresh_lists()
+                                    # Reset dropdown
+                                    delete_file_select.value = None
+                                else:
+                                    notify_error(res.get("message", "Không thể xóa file"))
+                            except Exception as e:
+                                logger.error(f"Error deleting file: {e}", exc_info=True)
+                                notify_error(f"Lỗi khi xóa file: {str(e)}")
+                        ui.button("Xóa", color="negative", on_click=confirm_delete).props("type=button")
+                dialog.open()
+            
+            def show_clear_all_confirm():
+                # Lấy số lượng file hiện tại để hiển thị trong dialog
+                result = api_get_files(session_state.session_id)
+                total_files = result.get("total_files", 0) if result.get("success") else 0
+                
+                if total_files == 0:
+                    notify_error("Không có file nào để xóa")
+                    return
+                
+                with ui.dialog() as dialog, ui.card().classes("p-6 gap-4"):
+                    ui.label(f"Xác nhận xóa TẤT CẢ tài liệu").classes("text-lg font-semibold text-red-600")
+                    ui.label(f"Bạn có chắc chắn muốn xóa TẤT CẢ {total_files} tài liệu không?").classes("text-gray-700")
+                    ui.label("Hành động này sẽ xóa vĩnh viễn tất cả các file và không thể hoàn tác!").classes("text-red-600 font-medium")
+                    
+                    with ui.row().classes("gap-2 justify-end w-full"):
+                        ui.button("Hủy", on_click=dialog.close).props("outline")
+                        async def confirm_clear_all():
+                            dialog.close()
+                            notify_success("Đang xóa tất cả tài liệu và remove chunks khỏi vector store...", notify_type="info")
+                            try:
+                                res = await asyncio.to_thread(api_clear_all_files, session_state.session_id)
+                                if res.get("success"):
+                                    notify_success(res.get("message", "Đã xóa toàn bộ tài liệu thành công"))
+                                    # Refresh danh sách file sau khi xóa
+                                    await refresh_delete_file_list()
+                                    await refresh_lists()
+                                    # Reset dropdown
+                                    delete_file_select.value = None
+                                else:
+                                    notify_error(res.get("message", "Không thể xóa tài liệu"))
+                            except Exception as e:
+                                logger.error(f"Error clearing all files: {e}", exc_info=True)
+                                notify_error(f"Lỗi khi xóa tài liệu: {str(e)}")
+                        ui.button("Xóa tất cả", color="negative", on_click=confirm_clear_all).props("type=button")
+                dialog.open()
+            
+            with ui.column().classes("gap-2 w-full"):
+                ui.button(
+                    "🗑️ Xóa file đã chọn", 
+                    color="negative", 
+                    on_click=show_delete_selected_confirm
+                ).props("outline dense").classes("w-full").style("font-size: 0.85rem")
+                ui.button(
+                    "🗑️ Xóa tất cả", 
+                    color="negative", 
+                    on_click=show_clear_all_confirm
+                ).props("outline dense").classes("w-full").style("font-size: 0.85rem")
+            
+            # Load danh sách file khi sidebar được render
+            asyncio.create_task(refresh_delete_file_list())
         
         ui.separator()
         with ui.card().classes("w-full shadow-none border p-3 gap-2"):
@@ -1165,7 +1291,30 @@ def login_page():
             ui.markdown("## Đăng nhập").classes("self-center")
             with ui.card().classes("gap-3 w-full p-6 shadow-md").style("border: 1px solid #ccc"):
                 email = ui.input("Email").classes("w-full")
-                password = ui.input("Mật khẩu", password=True).classes("w-full")
+                
+                # Password input với icon con mắt để toggle hiển thị
+                password_visible = False
+                
+                # Tạo wrapper với relative positioning để đặt icon bên trong input
+                password_container = ui.element("div").classes("w-full relative")
+                with password_container:
+                    password = ui.input("Mật khẩu", password=True).classes("w-full")
+                    
+                    def toggle_password_visibility():
+                        nonlocal password_visible
+                        password_visible = not password_visible
+                        if password_visible:
+                            password.props(remove="type=password")
+                            password.props("type=text")
+                            password_btn.props("icon=visibility_off")
+                        else:
+                            password.props(remove="type=text")
+                            password.props("type=password")
+                            password_btn.props("icon=visibility")
+                    
+                    # Button với icon con mắt đặt ở góc phải của input
+                    password_btn = ui.button(icon="visibility", on_click=toggle_password_visibility).props("flat dense round").classes("text-gray-600 hover:text-gray-800").style("position: absolute; right: 4px; top: 50%; transform: translateY(-50%); margin-top: 12px; z-index: 10; min-width: 32px; height: 32px;")
+                
                 with ui.column().classes("w-full items-center gap-2"):
                     ui.link("Chưa có tài khoản? Đăng ký", "/register")
                     ui.link("Quên mật khẩu?", "/forgot-password")
@@ -1298,7 +1447,7 @@ def documents_page():
     ui.markdown("### Upload mới")
     
     async def handle_documents_upload(e):
-        """Xử lý upload trong trang documents"""
+        """Xử lý upload trong trang documents - ngăn chặn reload trang"""
         try:
             result = await upload_temp_files(e)
             if result:  # Upload thành công
@@ -1311,11 +1460,32 @@ def documents_page():
             logger.error(f"Error in handle_documents_upload: {ex}", exc_info=True)
             notify_error(f"Lỗi khi xử lý upload: {ex}")
     
-    ui.upload(
+    documents_upload = ui.upload(
         multiple=True,
         label="Chọn hoặc kéo thả PDF",
         on_upload=handle_documents_upload,
     ).props('accept=".pdf"')
+    
+    # Ngăn chặn form submission mặc định để tránh reload trang bằng JavaScript
+    def prevent_documents_form_submit():
+        ui.run_javascript('''
+            (function() {
+                // Tìm tất cả các form và ngăn chặn submission
+                document.querySelectorAll('form').forEach(function(form) {
+                    form.addEventListener('submit', function(e) {
+                        // Chỉ prevent nếu form chứa file input
+                        if (form.querySelector('input[type="file"]')) {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            return false;
+                        }
+                    }, true);
+                });
+            })();
+        ''')
+    
+    # Chạy sau khi component được render
+    ui.timer(0.1, prevent_documents_form_submit, once=True)
 
     def delete_selected():
         if not filename_dropdown.value:
