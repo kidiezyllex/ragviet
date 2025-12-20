@@ -531,27 +531,14 @@ class ChatSendView(APIView):
             }, status=status.HTTP_200_OK)
         
         try:
-            logger.info(f"===== SEARCH DEBUG START =====")
-            logger.info(f"Query: '{message}'")
-            logger.info(f"Selected file: {selected_file}")
-            logger.info(f"User ID: {user_id}")
-            logger.info(f"Vector store stats: {stats}")
-            
             # Tìm kiếm với filename filter (nếu có)
             search_results = vector_store.search(message, top_k=30, filename=selected_file, user_id=user_id)
             
             # Fallback: Nếu không tìm thấy kết quả và có filename filter, thử lại không filter filename
-            used_fallback = False
             if not search_results and selected_file:
                 logger.warning(f"Không tìm thấy kết quả với file '{selected_file}'. Đang thử tìm trên tất cả file...")
                 search_results = vector_store.search(message, top_k=30, filename=None, user_id=user_id)
-                used_fallback = True
             
-            logger.info(f"Search results count: {len(search_results) if search_results else 0}")
-            if search_results and len(search_results) > 0:
-                logger.info(f"First result: {search_results[0].get('filename')} page {search_results[0].get('page_number')}")
-                logger.info(f"First result text preview: {search_results[0].get('text', '')[:100]}...")
-            logger.info(f"===== SEARCH DEBUG END =====")
             
             if not search_results:
                 response = "Không tìm thấy thông tin liên quan trong các tài liệu đã upload."
