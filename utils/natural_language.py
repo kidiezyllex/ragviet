@@ -86,14 +86,12 @@ def get_natural_response(query: str) -> Optional[str]:
     """
     normalized = normalize_text(query)
     
+    # Exact match first
     if normalized in NATURAL_RESPONSES:
         return NATURAL_RESPONSES[normalized]
     
-    for key, response in NATURAL_RESPONSES.items():
-        if key in normalized or normalized in key:
-            return response
-    
-    if re.match(r'^(chào|hello|hi)', normalized):
+    # Use regex patterns only - removed dangerous substring matching
+    if re.match(r'^(chào|hello|hi)(\s+|$)', normalized):
         return NATURAL_RESPONSES["chào"]
     elif re.match(r'^bạn\s+(là|khỏe|thế nào|có khỏe)', normalized):
         return NATURAL_RESPONSES["bạn là ai"]
@@ -101,9 +99,9 @@ def get_natural_response(query: str) -> Optional[str]:
         return NATURAL_RESPONSES["hôm nay bạn thế nào"]
     elif re.match(r'^giới\s+thiệu', normalized):
         return NATURAL_RESPONSES["giới thiệu về bạn"]
-    elif re.match(r'^(cảm\s+ơn|thanks)', normalized):
+    elif re.match(r'^(cảm\s+ơn|thanks|thank\s+you)(\s+|$)', normalized):
         return NATURAL_RESPONSES["cảm ơn"]
-    elif re.match(r'^(tạm\s+biệt|bye)', normalized):
+    elif re.match(r'^(tạm\s+biệt|bye|goodbye)(\s+|$)', normalized):
         return NATURAL_RESPONSES["tạm biệt"]
     
     return None

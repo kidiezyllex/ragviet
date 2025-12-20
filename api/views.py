@@ -531,9 +531,27 @@ class ChatSendView(APIView):
             }, status=status.HTTP_200_OK)
         
         try:
-            logger.info(f"Đang tìm kiếm câu trả lời cho: {message} (file: {selected_file}, user: {user_id})")
+            logger.info(f"===== SEARCH DEBUG START =====")
+            logger.info(f"Query: '{message}'")
+            logger.info(f"Selected file: {selected_file}")
+            logger.info(f"User ID: {user_id}")
+            logger.info(f"Vector store stats: {stats}")
             
+            # Tìm kiếm với filename filter (nếu có)
             search_results = vector_store.search(message, top_k=30, filename=selected_file, user_id=user_id)
+            
+            # Fallback: Nếu không tìm thấy kết quả và có filename filter, thử lại không filter filename
+            used_fallback = False
+            if not search_results and selected_file:
+                logger.warning(f"Không tìm thấy kết quả với file '{selected_file}'. Đang thử tìm trên tất cả file...")
+                search_results = vector_store.search(message, top_k=30, filename=None, user_id=user_id)
+                used_fallback = True
+            
+            logger.info(f"Search results count: {len(search_results) if search_results else 0}")
+            if search_results and len(search_results) > 0:
+                logger.info(f"First result: {search_results[0].get('filename')} page {search_results[0].get('page_number')}")
+                logger.info(f"First result text preview: {search_results[0].get('text', '')[:100]}...")
+            logger.info(f"===== SEARCH DEBUG END =====")
             
             if not search_results:
                 response = "Không tìm thấy thông tin liên quan trong các tài liệu đã upload."
@@ -874,6 +892,36 @@ class FileUploadView(APIView):
                             page_count = list(pages_dict.values())[0] if pages_dict else 0
                             pages_info[filename] = page_count
                             logger.info(f"Đã xử lý {filename}: {len(chunks)} chunks, {page_count} trang")
+                            
+                            # Log chunks vào file text
+                            try:
+                                from datetime import datetime
+                                log_dir = "chunk_logs"
+                                os.makedirs(log_dir, exist_ok=True)
+                                
+                                base_name = os.path.splitext(filename)[0]  # Loại bỏ .pdf
+                                log_filename = f"{base_name}_chunks.txt"
+                                log_path = os.path.join(log_dir, log_filename)
+                                
+                                with open(log_path, 'w', encoding='utf-8') as log_file:
+                                    log_file.write(f"=== CHUNK LOG FOR: {filename} ===\n")
+                                    log_file.write(f"Total Chunks: {len(chunks)}\n")
+                                    log_file.write(f"Total Pages: {page_count}\n")
+                                    log_file.write(f"User ID: {user_id}\n")
+                                    log_file.write(f"Generated at: {datetime.now().isoformat()}\n")
+                                    log_file.write("=" * 80 + "\n\n")
+                                    
+                                    for i, chunk in enumerate(chunks, 1):
+                                        log_file.write(f"--- CHUNK {i} ---\n")
+                                        log_file.write(f"Page: {chunk['metadata']['page_number']}\n")
+                                        log_file.write(f"Chunk ID: {chunk['metadata']['chunk_id']}\n")
+                                        log_file.write(f"Text Length: {len(chunk['text'])} chars\n")
+                                        log_file.write(f"\nContent:\n{chunk['text']}\n")
+                                        log_file.write("\n" + "=" * 80 + "\n\n")
+                                
+                                logger.info(f"Đã lưu chunk log vào {log_path}")
+                            except Exception as log_error:
+                                logger.warning(f"Không thể lưu chunk log: {str(log_error)}")
                         else:
                             pages_info[filename] = 0
                             logger.warning(f"Không có pages_dict cho {filename}")
