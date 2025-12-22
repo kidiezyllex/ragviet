@@ -47,6 +47,9 @@ ui.add_head_html("""
 .nicegui-content{padding:0!important;}
 .q-field__control{background:white!important;}
 .q-message-text strong { font-weight: bold; }
+.q-message-text:has(.q-message-text-content > div[id]:empty:not(:has(*))) {
+    display: none !important;
+}
 .math-formula {
     font-family: 'Times New Roman', serif;
     font-style: italic;
@@ -256,34 +259,42 @@ def notify_success(msg: str, notify_type: str = "positive"):
     """Hiển thị notification thành công"""
     try:
         ui.notify(msg, type=notify_type)
-    except RuntimeError:
-        # Nếu không có context (từ background task), dùng JavaScript
-        ui.run_javascript(f'''
-            if (window.$q) {{
-                window.$q.notify({{
-                    message: {json.dumps(msg)},
-                    type: {json.dumps(notify_type)},
-                    position: 'top'
-                }});
-            }}
-        ''')
+    except (RuntimeError, AttributeError):
+        try:
+            client = context.client
+            if client:
+                client.run_javascript(f'''
+                    if (window.$q) {{
+                        window.$q.notify({{
+                            message: {json.dumps(msg)},
+                            type: {json.dumps(notify_type)},
+                            position: 'top'
+                        }});
+                    }}
+                ''')
+        except (RuntimeError, AttributeError):
+            pass
 
 
 def notify_error(msg: str):
     """Hiển thị notification lỗi"""
     try:
         ui.notify(msg, type="negative")
-    except RuntimeError:
-        # Nếu không có context (từ background task), dùng JavaScript
-        ui.run_javascript(f'''
-            if (window.$q) {{
-                window.$q.notify({{
-                    message: {json.dumps(msg)},
-                    type: 'negative',
-                    position: 'top'
-                }});
-            }}
-        ''')
+    except (RuntimeError, AttributeError):
+        try:
+            client = context.client
+            if client:
+                client.run_javascript(f'''
+                    if (window.$q) {{
+                        window.$q.notify({{
+                            message: {json.dumps(msg)},
+                            type: 'negative',
+                            position: 'top'
+                        }});
+                    }}
+                ''')
+        except (RuntimeError, AttributeError):
+            pass
 
 
 def require_login() -> bool:
@@ -294,10 +305,6 @@ def require_login() -> bool:
 
 def require_auth():
     """Kiểm tra đăng nhập và redirect về /login nếu chưa đăng nhập."""
-    # Chỉ restore session nếu chưa login để tránh gọi API không cần thiết
-    if not session_state.is_logged_in:
-        restore_session_from_storage()
-    
     if not session_state.is_logged_in:
         ui.add_head_html(
             '<script>window.location.href = "/login";</script>',
@@ -579,29 +586,83 @@ def handle_login(email: str, password: str):
     if not email or not password:
         notify_error("Vui lòng nhập email và mật khẩu")
         return
-    result = api_login(email, password)
-    if result.get("success"):
-        session_state.session_id = result["session_id"]
-        session_state.access_token = result.get("access_token", result["session_id"])
-        session_state.user = result.get("user")
-        session_state.chat_session_id = result.get("chat_session_id")
-        save_session_to_storage()
-        notify_success(result.get("message", "Đăng nhập thành công"))
-        # Nếu là admin thì chuyển sang trang admin
-        if session_state.user and session_state.user.get("email") == "adminragviet@gmail.com":
-            ui.navigate.to("/admin")
-        else:
-            ui.navigate.to("/")
-    else:
-        status_code = result.get("status_code")
-        msg = (
-            result.get("message")
-            or result.get("detail")
-            or result.get("response")
-            or (f"{status_code} Unauthorized" if status_code == 401 else None)
-            or "Đăng nhập thất bại"
-        )
-        notify_error(msg)
+    
+    try:
+        client_ref = context.client
+    except (RuntimeError, AttributeError):
+        client_ref = None
+    
+    notify_success("Đang đăng nhập...", notify_type="info")
+    
+    async def login_async():
+        try:
+            result = await asyncio.to_thread(api_login, email, password)
+            if result.get("success"):
+                session_state.session_id = result["session_id"]
+                session_state.access_token = result.get("access_token", result["session_id"])
+                session_state.user = result.get("user")
+                session_state.chat_session_id = result.get("chat_session_id")
+                save_session_to_storage()
+                
+                if client_ref:
+                    client_ref.run_javascript(f'''
+                        if (window.$q) {{
+                            window.$q.notify({{
+                                message: {json.dumps(result.get("message", "Đăng nhập thành công"))},
+                                type: 'positive',
+                                position: 'top'
+                            }});
+                        }}
+                    ''')
+                
+                if session_state.user and session_state.user.get("email") == "adminragviet@gmail.com":
+                    if client_ref:
+                        client_ref.run_javascript('window.location.href = "/admin";')
+                    else:
+                        ui.navigate.to("/admin")
+                else:
+                    if client_ref:
+                        client_ref.run_javascript('window.location.href = "/";')
+                    else:
+                        ui.navigate.to("/")
+            else:
+                status_code = result.get("status_code")
+                msg = (
+                    result.get("message")
+                    or result.get("detail")
+                    or result.get("response")
+                    or (f"{status_code} Unauthorized" if status_code == 401 else None)
+                    or "Đăng nhập thất bại"
+                )
+                if client_ref:
+                    client_ref.run_javascript(f'''
+                        if (window.$q) {{
+                            window.$q.notify({{
+                                message: {json.dumps(msg)},
+                                type: 'negative',
+                                position: 'top'
+                            }});
+                        }}
+                    ''')
+                else:
+                    notify_error(msg)
+        except Exception as e:
+            logger.error(f"Error in login_async: {e}", exc_info=True)
+            error_msg = f"Lỗi khi đăng nhập: {str(e)}"
+            if client_ref:
+                client_ref.run_javascript(f'''
+                    if (window.$q) {{
+                        window.$q.notify({{
+                            message: {json.dumps(error_msg)},
+                            type: 'negative',
+                            position: 'top'
+                        }});
+                    }}
+                ''')
+            else:
+                notify_error(error_msg)
+    
+    asyncio.create_task(login_async())
 
 
 def handle_register(username: str, email: str, password: str, confirm: str):
@@ -658,6 +719,11 @@ def render_sidebar(include_file_select: bool = True):
     # Khởi tạo với dữ liệu rỗng, load sau để không block UI
     file_names = []
     file_select = None
+    
+    # Chỉ restore session nếu chưa login để tránh gọi API không cần thiết
+    # Không blocking - chỉ check nhanh
+    if not session_state.is_logged_in:
+        restore_session_from_storage()
 
     with ui.column().classes(
         "bg-gray-50 border-r h-screen p-4 gap-3 shrink-0 justify-between"
@@ -696,24 +762,28 @@ def render_sidebar(include_file_select: bool = True):
                 return []
 
         async def handle_upload(e):
-            """Xử lý upload và refresh sau khi thành công - ngăn chặn reload trang"""
+            """Xử lý upload và refresh sau khi thành công - ngăn chặn reload trang và navigation"""
             try:
                 result = await upload_temp_files(e)
                 if result:      # Upload thành công
-                    await asyncio.sleep(1.0)
-                    max_retries = 5
+                    # Chỉ refresh sidebar, không trigger navigation
+                    await asyncio.sleep(0.5)  # Giảm delay
+                    max_retries = 3  # Giảm số lần retry
                     for retry in range(max_retries):
-                        new_files = await refresh_lists()
-                        if new_files:  # Có files rồi
-                            logger.info(f"Successfully refreshed file list after {retry + 1} attempts")
-                            # Force update UI
-                            if file_select is not None:
-                                file_select.update()
-                            # Refresh danh sách file xóa nếu đã được định nghĩa
-                            if hasattr(session_state, 'refresh_delete_file_list') and session_state.refresh_delete_file_list:
-                                await session_state.refresh_delete_file_list()
-                            break
-                        await asyncio.sleep(0.3)
+                        try:
+                            new_files = await refresh_lists()
+                            if new_files:  # Có files rồi
+                                logger.info(f"Successfully refreshed file list after {retry + 1} attempts")
+                                # Force update UI - chỉ update sidebar, không navigate
+                                if file_select is not None:
+                                    file_select.update()
+                                # Refresh danh sách file xóa nếu đã được định nghĩa
+                                if hasattr(session_state, 'refresh_delete_file_list') and session_state.refresh_delete_file_list:
+                                    await session_state.refresh_delete_file_list()
+                                break
+                        except Exception as refresh_error:
+                            logger.warning(f"Error refreshing lists (retry {retry+1}): {refresh_error}")
+                        await asyncio.sleep(0.2)  # Giảm delay giữa các retry
                     else:
                         logger.warning("File list refresh completed but no files found")
             except Exception as ex:
@@ -757,8 +827,10 @@ def render_sidebar(include_file_select: bool = True):
             ui.timer(0.1, prevent_form_submit, once=True)
             
             async def load_files_async():
-                """Load files list async và cập nhật dropdown"""
+                """Load files list async và cập nhật dropdown - không blocking UI"""
                 try:
+                    # Delay nhỏ để UI render trước
+                    await asyncio.sleep(0.1)
                     new_text, new_files = await async_refresh_files_list()
                     if include_file_select and file_select is not None:
                         new_options = ["Tất cả"] + new_files
@@ -768,6 +840,7 @@ def render_sidebar(include_file_select: bool = True):
                 except Exception as e:
                     logger.error(f"Error loading files async: {e}", exc_info=True)
             
+            # Chạy async trong background, không block render
             asyncio.create_task(load_files_async())
 
         ui.separator()
@@ -780,9 +853,14 @@ def render_sidebar(include_file_select: bool = True):
                 value=None
             ).props("clearable dense").classes("w-full").style("font-size: 0.85rem")
             
+            # Flag để ngăn navigation khi refresh programmatically
+            _is_refreshing_sidebar = False
+            
             async def refresh_sidebar_history():
                 """Refresh chat history trong sidebar (async)"""
+                nonlocal _is_refreshing_sidebar
                 try:
+                    _is_refreshing_sidebar = True  # Set flag để ngăn navigation
                     sessions_result = await asyncio.to_thread(api_get_chat_sessions, session_state.session_id)
                     if sessions_result.get("success"):
                         sessions = sessions_result.get("sessions", [])
@@ -810,6 +888,8 @@ def render_sidebar(include_file_select: bool = True):
                         chat_history_sidebar.update()
                 except Exception as e:
                     logger.error(f"Error refreshing sidebar history: {e}")
+                finally:
+                    _is_refreshing_sidebar = False  # Reset flag
             
             def refresh_sidebar_history_sync():
                 """Sync wrapper cho refresh_sidebar_history"""
@@ -845,6 +925,10 @@ def render_sidebar(include_file_select: bool = True):
             session_state.refresh_sidebar_history = refresh_sidebar_history
             
             def on_sidebar_history_change(e):
+                # Bỏ qua nếu đang refresh programmatically
+                if _is_refreshing_sidebar:
+                    return
+                    
                 val = e.value
                 current = session_state.pending_load_history or session_state.chat_session_id
                 print(f"DEBUG: Sidebar change event. Val={val}, Current={current}, Equal={val==current}")
@@ -872,8 +956,11 @@ def render_sidebar(include_file_select: bool = True):
                         ui.timer(0.5, retry_load, once=True)
             
             chat_history_sidebar.on_value_change(on_sidebar_history_change)
-            # Load dữ liệu async ở background, không block UI
-            asyncio.create_task(refresh_sidebar_history())
+            # Load dữ liệu async ở background với delay để không block UI render
+            async def delayed_refresh():
+                await asyncio.sleep(0.2)  # Delay để UI render trước
+                await refresh_sidebar_history()
+            asyncio.create_task(delayed_refresh())
         
         ui.separator()
         
@@ -1006,8 +1093,26 @@ def render_shell(include_file_select: bool, content_builder):
 
 @ui.page("/")
 def home_page():
-    if not require_auth():
-        return
+    # Kiểm tra auth nhanh, không blocking
+    if not session_state.is_logged_in:
+        # Thử restore session nhanh từ storage (không verify)
+        user_store = _get_user_store()
+        if user_store:
+            stored_session = user_store.get("session_id")
+            if stored_session:
+                session_state.session_id = stored_session
+                session_state.access_token = stored_session
+                session_state.user = user_store.get("user")
+                session_state.chat_session_id = user_store.get("chat_session_id")
+        
+        # Nếu vẫn chưa login, redirect
+        if not session_state.is_logged_in:
+            ui.add_head_html(
+                '<script>window.location.href = "/login";</script>',
+                shared=False
+            )
+            ui.label("Đang chuyển đến trang đăng nhập...").classes("text-center p-4")
+            return
     
     def build_content(file_select):
         ui.add_css(r'a:link, a:visited {color: inherit !important; text-decoration: none; font-weight: 500}')
@@ -1151,7 +1256,6 @@ def home_page():
         def chat_messages_view():
             if chat_entries:
                 for entry in chat_entries:
-                    # Luôn render nội dung qua HTML để tránh text bubble dư thừa
                     with ui.chat_message(
                         "",
                         stamp=entry.get("stamp"),
@@ -1161,7 +1265,23 @@ def home_page():
                         ui.html(entry.get("html") or format_text(entry.get("text", "")), sanitize=False)
             else:
                 ui.label("Upload tài liệu của bạn để bắt đầu cuộc trò chuyện nhé!").classes("mx-auto my-36 text-gray-500")
-            ui.run_javascript('window.scrollTo(0, document.body.scrollHeight)')
+            ui.run_javascript('''
+                (function() {
+                    setTimeout(function() {
+                        document.querySelectorAll('.q-message-text').forEach(function(msgText) {
+                            var contentDiv = msgText.querySelector('.q-message-text-content > div[id]');
+                            if (contentDiv) {
+                                var hasContent = contentDiv.textContent && contentDiv.textContent.trim() !== '';
+                                var hasChildren = contentDiv.querySelector('*') !== null;
+                                if (!hasContent && !hasChildren) {
+                                    msgText.remove();
+                                }
+                            }
+                        });
+                        window.scrollTo(0, document.body.scrollHeight);
+                    }, 50);
+                })();
+            ''')
 
         def add_message(role: str, text: str, stamp: Optional[str] = None, pending: bool = False) -> str:
             msg_id = str(uuid4())

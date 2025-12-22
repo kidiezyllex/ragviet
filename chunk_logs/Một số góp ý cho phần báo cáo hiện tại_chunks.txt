@@ -1,0 +1,217 @@
+=== CHUNK LOG FOR: Một số góp ý cho phần báo cáo hiện tại.pdf ===
+Total Chunks: 12
+Total Pages: 2
+User ID: 69414dd252f0d34caf7ea4a0
+Generated at: 2025-12-23T01:49:01.351726
+================================================================================
+
+--- CHUNK 1 ---
+Page: 1
+Chunk ID: 0
+Text Length: 399 chars
+
+Content:
+Một số góp ý cho phần báo cáo hiện tại:
+
+1. Bìa LVTN ghi tên đề tài cụ thể như gợi ý trong ds hội đồng
+
+2. Tóm tắt là chỉ nêu các ý chính về bối cảnh - vấn đề - hướng giải quyết - kết
+   quả. Tầm 200 - 300 từ, không nên quá dài
+
+3. Header ở quá sát so với lề trên
+
+4. Kiểm tra lỗi chính tả, ngữ pháp: trước dấu phẩy và dấu chấm không có
+   khoảng trắng, giữa 2 từ chỉ được có 1 khoảng trắng thôi, ….
+
+================================================================================
+
+--- CHUNK 2 ---
+Page: 1
+Chunk ID: 1
+Text Length: 399 chars
+
+Content:
+trước dấu phẩy và dấu chấm không có
+   khoảng trắng, giữa 2 từ chỉ được có 1 khoảng trắng thôi, ….
+
+5. Khoảng cách giữa cách đoạn là quá xa nhau
+
+6. Văn bản cần được canh đều (ví dụ trang 2)
+
+7. Trang 6: DRF là gì, khái niệm hay chi tiết thông tin về DRF
+
+8. Các headings không nên dài dòng, ngắn gọn xúc tích: ví dụ thay vì Xử lý tài
+    liệu pdf tiếng việt bằng pymupdf-> PyMuPDF. bên trong nội du
+
+================================================================================
+
+--- CHUNK 3 ---
+Page: 1
+Chunk ID: 2
+Text Length: 400 chars
+
+Content:
+n xúc tích: ví dụ thay vì Xử lý tài
+    liệu pdf tiếng việt bằng pymupdf-> PyMuPDF. bên trong nội dung cụ thể sau
+
+9. Trang 6, Ví dụ MuPDF engine là gì? bài báo trang web nào introduce cái này
+   ???? Các trích dẫn nên đánh number cho tiện theo dõi và tài liệu tham khảo
+   dưới cung
+
+10. Rồi cái related works mà cô yêu cầu lúc đầu đâu rồi? phải nêu cụ thể ai đã
+   làm gì để giải quyết vấn đề này b
+
+================================================================================
+
+--- CHUNK 4 ---
+Page: 1
+Chunk ID: 3
+Text Length: 400 chars
+
+Content:
+ated works mà cô yêu cầu lúc đầu đâu rồi? phải nêu cụ thể ai đã
+   làm gì để giải quyết vấn đề này bỏ vô chương 1 hoặc chương 2 nhé
+
+11. Trong chương 1 phải có phần phân chia công việc cụ thể nhé. 2 bạn phải có
+   2 quyển luận văn, có phần giống nhau và phần khác biệt, tuỳ theo bảng phân
+   chia công việc cụ thể (chương 2 lý thuyết chỉ ghi phần thuộc về công việc của
+   mình, ví dụ faiss của ai ng
+
+================================================================================
+
+--- CHUNK 5 ---
+Page: 1
+Chunk ID: 4
+Text Length: 400 chars
+
+Content:
+g việc cụ thể (chương 2 lý thuyết chỉ ghi phần thuộc về công việc của
+   mình, ví dụ faiss của ai ng đó ghi, PyMuPdf của ai ng đó ghi,…, chương 3 có
+   phần giống phần khác tuỳ vào phân chia cv)
+
+12. Trang 7, khi nói đến các mô hình cũng phải cite tới tài liệu giới thiệu mô hình
+   đó
+
+13. Các headings khi đậm khi normal, kiểm tra lại định dạng quy chuẩn hết nhé
+
+14. Trang 8, IndexFlatL2 là gì? có
+
+================================================================================
+
+--- CHUNK 6 ---
+Page: 1
+Chunk ID: 5
+Text Length: 400 chars
+
+Content:
+ngs khi đậm khi normal, kiểm tra lại định dạng quy chuẩn hết nhé
+
+14. Trang 8, IndexFlatL2 là gì? có rất nhiều thuật ngữ đưa ra không được giới
+   thiệu cụ thể, càng chi tiết càng tốt để người đọc hiểu, hoặc giới thiệu sơ lược
+   và cite tới nơi giới thiệu thuật ngữ đó để người đọc cần tìm hiểu thêm sẽ biết
+   chỗ tìm . semantic drift là gì? MRR
+
+15. Trang 9, mô hình rerank tự vẽ hay lấy ở đâu? lấ
+
+================================================================================
+
+--- CHUNK 7 ---
+Page: 1
+Chunk ID: 6
+Text Length: 398 chars
+
+Content:
+sẽ biết
+   chỗ tìm . semantic drift là gì? MRR
+
+15. Trang 9, mô hình rerank tự vẽ hay lấy ở đâu? lấy thì phải cite tới source
+
+16. Trang 10, sao gradio viết ít vậy?
+
+17. Mục 2.2 là phần giới thiệu cách hoạt động hệ thống của mình nên chuyển
+   sang chương 3 luôn nhé.
+
+18. Trang 11, kích thước 400 token và overlap 100, phải lý giải tại sao lại có con
+   số này, nếu k viết vô báo cáo thì phải note
+
+================================================================================
+
+--- CHUNK 8 ---
+Page: 1
+Chunk ID: 7
+Text Length: 135 chars
+
+Content:
+oken và overlap 100, phải lý giải tại sao lại có con
+   số này, nếu k viết vô báo cáo thì phải note để phản biện hỏi biết đường trả lời
+
+================================================================================
+
+--- CHUNK 9 ---
+Page: 2
+Chunk ID: 0
+Text Length: 400 chars
+
+Content:
+19. Trang 11, mô hình keepitreal/vietnamese-sbert tên lạ vậy=> vietnamese-sbert
+   phải không? BAAI/bge-reranker-base là gì? GroqAPI? LLM (llama-3.3-70b-
+    versatile)? Hệ thống đảm bảo hiệu suất cao ?
+
+20. chat History có được sử dụng hay không?
+
+21. Trang 12, hình 4 đâu?
+
+22. Trang 1, hình 5 rất mờ
+
+23. Trang 19, có thể chuyển sang phụ lục, trang 21-23 chuyển sang phụ lục
+
+24. Phần trình bày sơ
+
+================================================================================
+
+--- CHUNK 10 ---
+Page: 2
+Chunk ID: 1
+Text Length: 399 chars
+
+Content:
+mờ
+
+23. Trang 19, có thể chuyển sang phụ lục, trang 21-23 chuyển sang phụ lục
+
+24. Phần trình bày sơ đồ tuần tự nên rõ ràng dễ nhìn hơn, đang bị luôn tuồng khó
+   theo dõi, hoặc chuyển sơ đồ tuần tự vào phụ lục luôn
+
+25. Nội dung chính trong chương 3 chưa thấy =(, chủ yếu là phải cụ thể hoá mục
+   2.2 hiện tại. Ví dụ pymupdf xử lý văn bản ntn, (code minh hoạ ngắn gọn or mã
+    giả), chunking ntn,
+
+================================================================================
+
+--- CHUNK 11 ---
+Page: 2
+Chunk ID: 2
+Text Length: 338 chars
+
+Content:
+.2 hiện tại. Ví dụ pymupdf xử lý văn bản ntn, (code minh hoạ ngắn gọn or mã
+    giả), chunking ntn, faiss index ntn, gradio xây dựng giao diện, …..
+
+26. Rồi các tài liệu tham khảo đâu mất rồi?
+
+Viết tiếp phần tiếp theo + chỉnh sửa phần hiện tại và gửi lại cho cô sớm nhất có
+thể.
+Chuẩn bị slides báo cáo + hẹn cô báo cáo thử ngày 15 or 17
+
+================================================================================
+
+--- CHUNK 12 ---
+Page: 2
+Chunk ID: 3
+Text Length: 38 chars
+
+Content:
+cáo + hẹn cô báo cáo thử ngày 15 or 17
+
+================================================================================
+

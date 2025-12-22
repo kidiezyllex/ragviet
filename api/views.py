@@ -15,7 +15,7 @@ from utils.auth import AuthManager
 from utils.pdf_processor import PDFProcessor
 from utils.vector_store import VectorStore
 from utils.reranker import Reranker
-from utils.natural_language import is_natural_question, get_natural_response
+from utils.natural_language import is_natural_question, get_natural_response, is_meaningless_query, get_meaningless_response
 
 logger = logging.getLogger(__name__)
 
@@ -496,6 +496,24 @@ class ChatSendView(APIView):
                 {"success": False, "message": "Vui lòng nhập câu hỏi"},
                 status=status.HTTP_400_BAD_REQUEST
             )
+        
+        # Kiểm tra câu hỏi vô nghĩa trước
+        if is_meaningless_query(message):
+            meaningless_response = get_meaningless_response()
+            if session_id and database and auth_manager:
+                user = auth_manager.get_user_from_session(session_id)
+                if user:
+                    if not chat_session_id:
+                        chat_session_id = database.create_chat_session(user["user_id"])
+                    database.save_chat_message(user["user_id"], message, meaningless_response, selected_file, chat_session_id)
+                    if chat_session_id:
+                        database.update_session(chat_session_id, title=message)
+            
+            return Response({
+                "success": True,
+                "response": meaningless_response,
+                "chat_session_id": chat_session_id
+            }, status=status.HTTP_200_OK)
         
         natural_response = get_natural_response(message)
         if natural_response:

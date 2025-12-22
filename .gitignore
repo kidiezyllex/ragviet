@@ -59,3 +59,5 @@ models/
 # Notes
 note/
 sequence_diagram/
+.cursorrules
+cursorrules
