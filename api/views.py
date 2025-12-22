@@ -227,6 +227,74 @@ Vui lòng thêm GROQ_API_KEY vào file .env để chatbot có thể trả lời 
         logger.error(f"Lỗi khi gọi LLM: {str(e)}")
         return f"⚠️ Lỗi khi tạo câu trả lời: {str(e)}\n\nThông tin từ tài liệu:\n\n{context_text}"
 
+
+def is_meaningless_query_ai(query: str) -> bool:
+    """
+    Sử dụng AI để nhận định câu hỏi có vô nghĩa hay không
+    
+    Args:
+        query: Câu hỏi cần kiểm tra
+        
+    Returns:
+        True nếu câu hỏi vô nghĩa, False nếu có nghĩa
+    """
+    if not query or len(query.strip()) < 3:
+        return False
+    
+    if llm_client is None:
+        logger.debug("LLM client không available, fallback về rule-based")
+        return is_meaningless_query(query)
+    
+    try:
+        prompt = f"""Bạn là một hệ thống phân loại câu hỏi. Nhiệm vụ của bạn là xác định xem một câu hỏi có ý nghĩa hay không.
+
+CÂU HỎI CẦN PHÂN LOẠI: "{query}"
+
+Hãy phân tích câu hỏi này và trả lời:
+- Nếu câu hỏi CÓ Ý NGHĨA (có thể hiểu được, có mục đích rõ ràng, liên quan đến tài liệu hoặc thông tin cụ thể): trả lời "MEANINGFUL"
+- Nếu câu hỏi VÔ NGHĨA (chỉ là ký tự ngẫu nhiên, pattern lặp lại, không có ý nghĩa thực sự): trả lời "MEANINGLESS"
+
+Ví dụ câu hỏi CÓ NGHĨA:
+- "Quy định về thủ tục hành chính là gì?"
+- "các góp ý về định dạng"
+- "Tài liệu này nói về điều gì?"
+- "Thời gian xử lý hồ sơ là bao lâu?"
+
+Ví dụ câu hỏi VÔ NGHĨA:
+- "aaaaaa"
+- "jkjlkjlkjk"
+- "abcabcabc"
+- "123456"
+- "!@#$%"
+
+Chỉ trả lời "MEANINGFUL" hoặc "MEANINGLESS", không giải thích thêm:"""
+
+        if llm_provider == "groq":
+            try:
+                response = llm_client.chat.completions.create(
+                    model=llm_model,
+                    messages=[
+                        {"role": "system", "content": "Bạn là một hệ thống phân loại câu hỏi chính xác và ngắn gọn."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.1,
+                    max_tokens=10
+                )
+                result = response.choices[0].message.content.strip().upper()
+                is_meaningless = "MEANINGLESS" in result
+                logger.debug(f"AI classification for '{query[:50]}...': {result} -> meaningless={is_meaningless}")
+                return is_meaningless
+            except Exception as e:
+                logger.warning(f"Lỗi khi gọi AI classification, fallback về rule-based: {str(e)}")
+                return is_meaningless_query(query)
+        else:
+            logger.debug("LLM provider không được hỗ trợ cho classification, fallback về rule-based")
+            return is_meaningless_query(query)
+    except Exception as e:
+        logger.error(f"Lỗi trong is_meaningless_query_ai: {str(e)}, fallback về rule-based")
+        return is_meaningless_query(query)
+
+
 COOKIE_NAME = "ragviet_session"
 COOKIE_MAX_AGE = 7 * 24 * 3600  # 7 days
 
@@ -497,8 +565,8 @@ class ChatSendView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        # Kiểm tra câu hỏi vô nghĩa trước
-        if is_meaningless_query(message):
+        # Kiểm tra câu hỏi vô nghĩa trước (sử dụng AI nếu có, fallback về rule-based)
+        if is_meaningless_query_ai(message):
             meaningless_response = get_meaningless_response()
             if session_id and database and auth_manager:
                 user = auth_manager.get_user_from_session(session_id)
@@ -1048,7 +1116,9 @@ class FileListView(APIView):
         files_list = []
         for file_info in user_files:
             filename = file_info['filename']
-            chunks_count = stats['files'].get(filename, 0)
+            mongo_chunks = file_info.get('total_chunks', 0)
+            vector_chunks = stats['files'].get(filename, 0)
+            chunks_count = mongo_chunks if mongo_chunks > 0 else vector_chunks
             files_list.append({
                 "filename": filename,
                 "chunks": chunks_count,
