@@ -170,6 +170,29 @@ def is_meaningless_query(query: str) -> bool:
                 if count * length / len(clean_text) >= 0.7:
                     return True
     
+    if len(clean_text) >= 6:
+        for length in range(2, min(4, len(clean_text) // 2 + 1)):
+            pattern = clean_text[:length]
+            total_pattern_chars = 0
+            for i in range(0, len(clean_text) - length + 1):
+                if clean_text[i:i+length] == pattern:
+                    total_pattern_chars += length
+            if total_pattern_chars / len(clean_text) >= 0.4:
+                return True
+    
+    if len(clean_text) >= 8:
+        unique_chars = len(set(clean_text))
+        if unique_chars <= 3:
+            return True
+        for length in range(2, min(4, len(clean_text) // 2 + 1)):
+            pattern = clean_text[:length]
+            occurrences = 0
+            for i in range(0, len(clean_text) - length + 1):
+                if clean_text[i:i+length] == pattern:
+                    occurrences += 1
+            if occurrences >= 4:
+                return True
+    
     words = re.findall(r'\b[a-záàảãạăắằẳẵặâấầẩẫậéèẻẽẹêếềểễệíìỉĩịóòỏõọôốồổỗộơớờởỡợúùủũụưứừửữựýỳỷỹỵđ]+\b', text.lower())
     
     common_words = {
@@ -186,6 +209,12 @@ def is_meaningless_query(query: str) -> bool:
     }
     
     meaningful_words = [w for w in words if len(w) >= 2 and (w in common_words or len(w) >= 4)]
+    
+    if len(words) > 0:
+        all_common_words = all(w in common_words for w in words)
+        if all_common_words and len(words) <= 5 and len(clean_text) >= 4:
+            if not any(w in ['gì', 'sao', 'thế', 'nào', 'đâu', 'khi', 'ai', 'what', 'when', 'where', 'why', 'how', 'who', 'which'] for w in words):
+                return True
     
     if len(meaningful_words) == 0 and len(clean_text) >= 4:
         unique_chars = len(set(clean_text))
@@ -241,26 +270,38 @@ def is_meaningless_query(query: str) -> bool:
             if len(set(meaningful_words)) <= 2:
                 return True
     
-    if re.search(r'\d', text) and len(clean_text) >= 6:
+    if re.search(r'\d', text):
         digit_letter_pattern = re.findall(r'[a-zA-Záàảãạăắằẳẵặâấầẩẫậéèẻẽẹêếềểễệíìỉĩịóòỏõọôốồổỗộơớờởỡợúùủũụưứừửữựýỳỷỹỵđ]\d|\d[a-zA-Záàảãạăắằẳẵặâấầẩẫậéèẻẽẹêếềểễệíìỉĩịóòỏõọôốồổỗộơớờởỡợúùủũụưứừửữựýỳỷỹỵđ]', text)
         if len(digit_letter_pattern) >= 3 and len(meaningful_words) == 0:
+            return True
+        if len(digit_letter_pattern) >= 4:
+            return True
+        if re.match(r'^([a-zA-Z]\d)+$', text) and len(text) >= 4:
+            return True
+        if len(digit_letter_pattern) >= 2 and len(clean_text) < 6:
             return True
     
     special_char_pattern = re.findall(r'[a-zA-Záàảãạăắằẳẵặâấầẩẫậéèẻẽẹêếềểễệíìỉĩịóòỏõọôốồổỗộơớờởỡợúùủũụưứừửữựýỳỷỹỵđ][\W]|[\W][a-zA-Záàảãạăắằẳẵặâấầẩẫậéèẻẽẹêếềểễệíìỉĩịóòỏõọôốồổỗộơớờởỡợúùủũụưứừửữựýỳỷỹỵđ]', text)
     if len(special_char_pattern) >= 3 and len(meaningful_words) == 0:
         return True
     
-    if len(meaningful_words) >= 4:
+    if len(meaningful_words) >= 2:
         question_words = {'what', 'when', 'where', 'why', 'how', 'who', 'which', 
                          'gì', 'sao', 'thế', 'nào', 'đâu', 'khi', 'ai'}
-        has_question_word = any(qw in text.lower() for qw in question_words)
+        has_question_word = any(qw in words for qw in question_words)
         
         action_words = {'làm', 'nói', 'biết', 'thấy', 'nghe', 'xem', 'học', 'đọc', 'viết', 
                        'nghĩ', 'muốn', 'là', 'có', 'được', 'do', 'does', 'did', 'is', 'are', 
                        'was', 'were', 'have', 'has', 'had', 'can', 'could', 'will', 'would'}
-        has_action_word = any(aw in text.lower() for aw in action_words)
+        has_action_word = any(aw in words for aw in action_words)
         
         if not has_question_word and not has_action_word:
+            if len(text.split()) >= 4:
+                long_words_only = all(len(w) >= 4 for w in words if w not in common_words)
+                if long_words_only and len(words) >= 3:
+                    return True
+                if len(words) >= 4 and all(w not in common_words for w in words):
+                    return True
             if len(text.split()) >= 5:
                 return True
     
@@ -272,6 +313,8 @@ def is_meaningless_query(query: str) -> bool:
     for pattern in keyboard_patterns:
         if pattern in clean_lower and len(clean_text) >= len(pattern):
             if len(meaningful_words) == 0:
+                return True
+            if len(clean_text) <= len(pattern) + 2:
                 return True
     
     return False

@@ -1421,7 +1421,7 @@ def home_page():
                     print("=" * 80)
                     
                     if hasattr(session_state, 'refresh_sidebar_history'):
-                        session_state.refresh_sidebar_history()
+                        await session_state.refresh_sidebar_history()
                     ui.notify("Đã nhận câu trả lời", type="positive")
                 else:
                     err = resp.get("message") or resp.get("response") or "Lỗi khi gửi tin nhắn"
